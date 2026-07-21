@@ -1,0 +1,212 @@
+// Innovation Management Platform — Prisma Schema
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  MANAGER
+  EMPLOYEE
+  INNOVATOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  AT_RISK
+  COMPLETED
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  DANGER
+}
+
+enum RecommendationPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RecommendationCategory {
+  RISK
+  PERFORMANCE
+  RESOURCE
+  TIMELINE
+}
+
+model User {
+  id             String       @id @default(cuid())
+  name           String
+  email          String       @unique
+  passwordHash   String
+  role           Role         @default(EMPLOYEE)
+  status         UserStatus   @default(ACTIVE)
+  avatarUrl      String?
+  specialization String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  projectsCreated   Project[]         @relation("ProjectCreator")
+  assignedProjects  ProjectMember[]
+  reports           Report[]
+  activities        Activity[]
+  notifications     Notification[]
+  comments          Comment[]
+  files             File[]
+  permissions       UserPermission[]
+
+  @@map("users")
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  key         String @unique
+  label       String
+  description String?
+
+  users UserPermission[]
+
+  @@map("permissions")
+}
+
+model UserPermission {
+  id           String     @id @default(cuid())
+  userId       String
+  permissionId String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+  @@map("user_permissions")
+}
+
+model Project {
+  id           String        @id @default(cuid())
+  name         String
+  description  String
+  domain       String
+  status       ProjectStatus @default(PLANNING)
+  progress     Int           @default(0)
+  healthScore  Int           @default(0)
+  aiScore      Int           @default(0)
+  startDate    DateTime
+  endDate      DateTime
+  createdById  String
+  createdBy    User          @relation("ProjectCreator", fields: [createdById], references: [id])
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  members         ProjectMember[]
+  reports         Report[]
+  activities      Activity[]
+  files           File[]
+  comments        Comment[]
+  recommendations AIRecommendation[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model Report {
+  id        String   @id @default(cuid())
+  projectId String
+  authorId  String
+  title     String
+  content   String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("reports")
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  projectId String?
+  userId    String
+  action    String
+  target    String
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("activities")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(INFO)
+  read      Boolean          @default(false)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime         @default(now())
+
+  @@map("notifications")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  projectId String
+  authorId  String
+  content   String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("comments")
+}
+
+model File {
+  id        String   @id @default(cuid())
+  projectId String
+  uploaderId String
+  name      String
+  url       String
+  size      Int
+  mimeType  String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploader  User     @relation(fields: [uploaderId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("files")
+}
+
+model AIRecommendation {
+  id          String                 @id @default(cuid())
+  projectId   String
+  title       String
+  description String
+  priority    RecommendationPriority
+  category    RecommendationCategory
+  project     Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt   DateTime               @default(now())
+
+  @@map("ai_recommendations")
+}
