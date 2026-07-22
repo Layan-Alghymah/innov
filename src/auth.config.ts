@@ -3,20 +3,19 @@ import type { NextAuthConfig } from "next-auth";
 /**
  * Edge-safe Auth.js configuration shared between the middleware (edge runtime)
  * and the full Node config in `auth.ts`. It must NOT import Prisma, bcrypt, or
- * any Node-only module, because the middleware runs on the edge runtime.
+ * any Node-only module.
  *
- * Route protection is enforced here (server-side) via the `authorized` callback
- * — not by merely hiding UI. Unauthenticated users hitting a protected route are
- * redirected to `/login`; authenticated users hitting `/login` go to `/dashboard`.
+ * Route protection is enforced here server-side via the `authorized` callback.
+ * The JWT/session carry only lightweight identity claims (id, name, email,
+ * registration + operational status, approved role keys) — never secrets,
+ * password hashes, approval notes, or full permission lists.
  */
-const PUBLIC_ROUTES = ["/login"];
+const PUBLIC_ROUTES = ["/login", "/register"];
 
 export const authConfig = {
   pages: {
     signIn: "/login",
   },
-  // Real providers are added in `auth.ts` (Node runtime). Kept empty here so the
-  // middleware bundle stays edge-safe.
   providers: [],
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {
@@ -24,19 +23,31 @@ export const authConfig = {
       const isPublic = PUBLIC_ROUTES.some((r) => nextUrl.pathname.startsWith(r));
 
       if (isPublic) {
-        if (isLoggedIn) return Response.redirect(new URL("/dashboard", nextUrl));
+        // Logged-in users skip the login page; registration stays reachable.
+        if (isLoggedIn && nextUrl.pathname.startsWith("/login")) {
+          return Response.redirect(new URL("/dashboard", nextUrl));
+        }
         return true;
       }
-      // Any non-public route requires a session; returning false redirects to signIn.
       return isLoggedIn;
     },
     jwt({ token, user }) {
-      if (user) token.uid = user.id;
+      if (user) {
+        token.uid = user.id;
+        // Fields set by the Credentials `authorize` return value.
+        const u = user as { registrationStatus?: string; status?: string; roleKeys?: string[] };
+        token.registrationStatus = u.registrationStatus;
+        token.status = u.status;
+        token.roleKeys = u.roleKeys ?? [];
+      }
       return token;
     },
     session({ session, token }) {
-      if (token.uid && session.user) {
-        session.user.id = token.uid as string;
+      if (session.user) {
+        if (token.uid) session.user.id = token.uid as string;
+        session.user.registrationStatus = token.registrationStatus as string | undefined;
+        session.user.status = token.status as string | undefined;
+        session.user.roleKeys = (token.roleKeys as string[] | undefined) ?? [];
       }
       return session;
     },

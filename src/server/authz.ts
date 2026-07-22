@@ -4,73 +4,46 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/server/db";
 import type { PermissionKey } from "@/modules/auth/permissions";
+import {
+  buildContext,
+  userInclude,
+  type AccessContext,
+  type UserWithRolesShape,
+} from "@/server/access-context";
 
-export interface ScopeGrant {
-  scopeType: string;
-  scopeId: string | null;
-}
-
-export interface AccessContext {
-  userId: string;
-  name: string;
-  email: string;
-  permissions: Set<PermissionKey>;
-  scopes: ScopeGrant[];
-}
+// Re-export the pure helpers so existing imports from `@/server/authz` keep working.
+export {
+  loadAccessContextByUserId,
+  can,
+  hasPlatformScope,
+  type AccessContext,
+  type ScopeGrant,
+} from "@/server/access-context";
 
 /**
- * Resolve the current user's effective permissions and data scopes from the
- * database. Deduped per-request via React `cache`. Returns null when there is
- * no valid session.
+ * Resolve the current session user's effective context (APPROVED + ACTIVE only).
+ * Deduped per-request. Returns null when there is no valid session or the user
+ * is not eligible.
  */
 export const getAccessContext = cache(async (): Promise<AccessContext | null> => {
   const session = await auth();
   if (!session?.user?.id) return null;
-
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    include: {
-      roleAssignments: {
-        include: { role: { include: { permissions: { include: { permission: true } } } } },
-      },
-    },
-  });
-  if (!user || user.status !== "ACTIVE") return null;
-
-  const permissions = new Set<PermissionKey>();
-  const scopes: ScopeGrant[] = [];
-  for (const assignment of user.roleAssignments) {
-    scopes.push({ scopeType: assignment.scopeType, scopeId: assignment.scopeId });
-    for (const rp of assignment.role.permissions) {
-      permissions.add(rp.permission.key as PermissionKey);
-    }
-  }
-
-  return { userId: user.id, name: user.name, email: user.email, permissions, scopes };
+  const user = await prisma.user.findUnique({ where: { id: session.user.id }, include: userInclude });
+  return buildContext(user as UserWithRolesShape | null);
 });
 
-/** Require a session; redirect to /login otherwise. Returns the access context. */
+/** Require a session; redirect to /login otherwise. */
 export async function requireUser(): Promise<AccessContext> {
   const ctx = await getAccessContext();
   if (!ctx) redirect("/login");
   return ctx;
 }
 
-/** Require a specific permission; redirect to /login when unauthenticated,
- *  or throw (→ nearest error boundary) when authenticated but unauthorized. */
+/** Require a permission; redirect when unauthenticated, throw FORBIDDEN when authenticated-but-unauthorized. */
 export async function requirePermission(permission: PermissionKey): Promise<AccessContext> {
   const ctx = await requireUser();
   if (!ctx.permissions.has(permission)) {
     throw new Error("FORBIDDEN: missing permission " + permission);
   }
   return ctx;
-}
-
-export function can(ctx: AccessContext | null, permission: PermissionKey): boolean {
-  return !!ctx?.permissions.has(permission);
-}
-
-/** True when the caller has an unrestricted (platform-wide) grant. */
-export function hasPlatformScope(ctx: AccessContext | null): boolean {
-  return !!ctx?.scopes.some((s) => s.scopeType === "PLATFORM");
 }

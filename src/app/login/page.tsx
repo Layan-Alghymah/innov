@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { site } from "@/config/site";
 import { LoginForm } from "@/modules/auth/components/login-form";
@@ -27,8 +28,12 @@ export default function LoginPage() {
         </div>
 
         <p className="mt-6 text-center text-xs text-muted">
-          © 2026 {site.name} — جميع الحقوق محفوظة
+          ليس لديك حساب؟{" "}
+          <Link href="/register" className="font-semibold text-primary hover:underline">
+            إنشاء حساب جديد
+          </Link>
         </p>
+        <p className="mt-2 text-center text-xs text-muted">© 2026 {site.name} — جميع الحقوق محفوظة</p>
       </div>
     </main>
   );

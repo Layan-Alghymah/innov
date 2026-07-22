@@ -311,23 +311,30 @@ enum NotificationType {
 // ---------------------------------------------------------------------------
 
 model User {
-  id                 String             @id @default(cuid())
-  name               String
-  email              String             @unique
-  emailVerified      DateTime?
-  passwordHash       String? // null for external identity providers (Entra ID)
-  image              String?
-  jobTitle           String?
+  id                        String             @id @default(cuid())
+  name                      String
+  email                     String             @unique
+  emailVerified             DateTime?
+  passwordHash              String? // null for external identity providers (Entra ID)
+  image                     String?
+  jobTitle                  String?
   // Operational account state (separate axis from registration approval).
-  status             UserStatus         @default(ACTIVE)
+  status                    UserStatus         @default(ACTIVE)
   // Registration approval lifecycle. Public self-registration starts PENDING;
   // SYSTEM_ADMIN is never assignable via public registration (app-enforced).
-  registrationStatus RegistrationStatus @default(PENDING)
-  requestedRoleKey   String? // role requested at self-registration (never SYSTEM_ADMIN)
-  approvedById       String? // registration approver (self-relation, hard FK)
-  approvedAt         DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  registrationStatus        RegistrationStatus @default(PENDING)
+  requestedRoleKey          String? // role requested at self-registration (never SYSTEM_ADMIN)
+  // Registration-intake details captured at self-registration (applicant input).
+  requestedOrgType          OrganizationType? // affiliation type for external applicants
+  requestedOrganizationName String? // free-text organization/affiliation name
+  requestedDepartmentId     String? // soft ref → Department.id (internal applicants)
+  registrationNote          String? // optional applicant note / department request
+  // Registration review outcome (approvedBy/At double as reviewer/reviewedAt).
+  approvedById              String? // registration reviewer/approver (self-relation, hard FK)
+  approvedAt                DateTime? // registration reviewedAt
+  rejectionReason           String? // internal reason (never shown to the rejected user)
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
 
   // Auth.js (for future Entra ID / OAuth via the Prisma adapter)
   accounts Account[]
