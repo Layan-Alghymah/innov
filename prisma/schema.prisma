@@ -429,6 +429,7 @@ model ResourceShare {
   allowedActions String[] // e.g. ["upload_evidence","confirm_attendance"]
   allowedFields  String[] // per-share writable field allow-list
   grantedById    String // granter (soft ref → User.id)
+  expiresAt      DateTime? // optional expiry; a share is inactive once past this
   revokedById    String? // revoker (soft ref → User.id)
   revokedAt      DateTime?
   createdAt      DateTime         @default(now())
@@ -706,6 +707,7 @@ model InnovationSolution {
   risks                String?
   notes                String?
   status               RecordStatus         @default(DRAFT)
+  publishedAt          DateTime? // set when explicitly published → visible to PUBLISHED (Viewer) scope
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   archivedAt           DateTime?
