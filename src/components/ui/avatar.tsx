@@ -1,35 +1,45 @@
+"use client";
+
+import * as React from "react";
+import * as AvatarPrimitive from "@radix-ui/react-avatar";
+
 import { cn } from "@/lib/utils";
 import { initials } from "@/lib/utils";
 
-const colorFromName = (name: string) => {
-  const palette = ["#4F46E5", "#7C3AED", "#16B364", "#F5A623", "#3B82F6", "#EF4444"];
-  const idx = name.charCodeAt(0) % palette.length;
-  return palette[idx];
-};
+const Avatar = React.forwardRef<
+  React.ElementRef<typeof AvatarPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Root>
+>(({ className, ...props }, ref) => (
+  <AvatarPrimitive.Root
+    ref={ref}
+    className={cn("relative flex h-10 w-10 shrink-0 overflow-hidden rounded-full", className)}
+    {...props}
+  />
+));
+Avatar.displayName = AvatarPrimitive.Root.displayName;
 
-export function Avatar({
-  name,
-  size = 40,
-  className,
-}: {
-  name: string;
-  size?: number;
-  className?: string;
-}) {
+const AvatarFallback = React.forwardRef<
+  React.ElementRef<typeof AvatarPrimitive.Fallback>,
+  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Fallback>
+>(({ className, ...props }, ref) => (
+  <AvatarPrimitive.Fallback
+    ref={ref}
+    className={cn(
+      "flex h-full w-full items-center justify-center bg-primary-50 text-xs font-bold text-primary-700",
+      className,
+    )}
+    {...props}
+  />
+));
+AvatarFallback.displayName = AvatarPrimitive.Fallback.displayName;
+
+/** Convenience: initials avatar from a name. */
+export function InitialsAvatar({ name, className }: { name: string; className?: string }) {
   return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-full font-bold text-white",
-        className
-      )}
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.38,
-        backgroundColor: colorFromName(name),
-      }}
-    >
-      {initials(name)}
-    </div>
+    <Avatar className={className}>
+      <AvatarFallback>{initials(name)}</AvatarFallback>
+    </Avatar>
   );
 }
+
+export { Avatar, AvatarFallback };

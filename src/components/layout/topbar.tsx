@@ -1,47 +1,57 @@
 "use client";
 
-import { Search, Bell, Moon, Sun } from "lucide-react";
-import { Avatar } from "@/components/ui/avatar";
-import { useAppStore } from "@/store/app-store";
-import { notifications } from "@/lib/mock-data";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Bell, FolderCheck, LogOut } from "lucide-react";
 
-export function Topbar({ title }: { title: string }) {
-  const { theme, toggleTheme } = useAppStore();
-  const unread = notifications.filter((n) => !n.read).length;
+import { routeTitles } from "@/config/navigation";
+import { InitialsAvatar } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { logoutAction } from "@/modules/auth/actions";
+
+function titleFor(pathname: string): string {
+  const match = Object.keys(routeTitles)
+    .filter((r) => pathname === r || pathname.startsWith(r + "/"))
+    .sort((a, b) => b.length - a.length)[0];
+  return match ? routeTitles[match] : "";
+}
+
+export function Topbar({ userName }: { userName: string }) {
+  const pathname = usePathname();
 
   return (
-    <header className="sticky top-0 z-20 flex h-20 items-center justify-between gap-4 border-b border-border bg-bg/80 px-8 backdrop-blur-xl dark:border-border-dark dark:bg-bg-dark/80">
-      <div>
-        <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100">{title}</h1>
-      </div>
+    <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-surface px-7 py-3.5 dark:border-border-dark dark:bg-surface-dark">
+      <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{titleFor(pathname)}</h1>
 
-      <div className="flex flex-1 items-center justify-end gap-3">
-        <div className="relative w-full max-w-sm">
-          <Search className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-          <input
-            type="text"
-            placeholder="ابحث عن مشروع، موظف، تقرير..."
-            className="h-11 w-full rounded-xl border border-border bg-white pr-10 pl-4 text-sm outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20 dark:border-border-dark dark:bg-surface-dark"
-          />
+      <div className="flex items-center gap-2.5">
+        <Button asChild variant="outline" size="sm">
+          <Link href="/compliance">
+            <FolderCheck className="h-4 w-4" />
+            ملف الامتثال
+          </Link>
+        </Button>
+
+        <Link
+          href="/alerts"
+          aria-label="مركز التنبيهات"
+          className="relative flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-surface text-slate-600 hover:bg-slate-50 dark:border-border-dark dark:bg-surface-dark dark:text-slate-300"
+        >
+          <Bell className="h-[18px] w-[18px]" />
+          <span className="absolute end-1.5 top-1.5 h-2 w-2 rounded-full border-2 border-surface bg-danger dark:border-surface-dark" />
+        </Link>
+
+        <div className="flex items-center gap-2 ps-1">
+          <InitialsAvatar name={userName} className="h-9 w-9" />
+          <span className="hidden text-sm font-semibold text-slate-700 sm:block dark:text-slate-200">
+            {userName}
+          </span>
         </div>
 
-        <button
-          onClick={toggleTheme}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border text-slate-500 transition-colors hover:bg-slate-50 dark:border-border-dark dark:text-slate-300 dark:hover:bg-white/5"
-        >
-          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-        </button>
-
-        <button className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border text-slate-500 transition-colors hover:bg-slate-50 dark:border-border-dark dark:text-slate-300 dark:hover:bg-white/5">
-          <Bell className="h-4 w-4" />
-          {unread > 0 && (
-            <span className="absolute -top-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[9px] font-bold text-white">
-              {unread}
-            </span>
-          )}
-        </button>
-
-        <Avatar name="سارة العتيبي" size={44} />
+        <form action={logoutAction}>
+          <Button type="submit" variant="ghost" size="icon" aria-label="تسجيل الخروج">
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </form>
       </div>
     </header>
   );
