@@ -630,13 +630,41 @@ model Idea {
   archivedAt    DateTime?
   archivedById  String? // soft ref → User.id
 
-  evaluations IdeaEvaluation[]
-  decisions   IdeaDecision[]
-  solution    InnovationSolution? @relation("SolutionFromIdea")
+  evaluations  IdeaEvaluation[]
+  decisions    IdeaDecision[]
+  infoRequests IdeaInfoRequest[]
+  solution     InnovationSolution? @relation("SolutionFromIdea")
 
   @@index([status])
   @@index([departmentId])
   @@map("ideas")
+}
+
+/// Lifecycle of a reviewer's "request for more information" on an idea.
+enum InfoRequestStatus {
+  OPEN
+  ANSWERED
+}
+
+/// A reviewer's request for more information (MORE_INFO_REQUESTED) and the
+/// author's response. Kept separate from the Idea so the submitted idea is not
+/// silently overwritten and the request/response history is preserved.
+model IdeaInfoRequest {
+  id            String            @id @default(cuid())
+  ideaId        String
+  requestedById String // soft ref → User.id (reviewer)
+  requestedInfo String
+  requestedAt   DateTime          @default(now())
+  responseText  String?
+  respondedById String? // soft ref → User.id (author)
+  respondedAt   DateTime?
+  status        InfoRequestStatus @default(OPEN)
+  idea          Idea              @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([ideaId, status])
+  @@map("idea_info_requests")
 }
 
 model IdeaEvaluation {
