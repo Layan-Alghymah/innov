@@ -3,11 +3,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 
-import { requirePermission, getAccessContext } from "@/server/authz";
+import { requirePermission, getAccessContext, can } from "@/server/authz";
 import { isAuthorizationError } from "@/server/authorization";
 import { getIdeaById, computeIdeaActionFlags } from "@/modules/ideas/service";
+import { listIdeaEvaluations, listInfoRequests, computeReviewFlags } from "@/modules/ideas/evaluation-service";
 import { IDEA_STATUS_LABELS } from "@/modules/ideas/schema";
 import { IdeaActionBar } from "@/modules/ideas/components/idea-actions";
+import { ReviewPanel } from "@/modules/ideas/components/review-panel";
+import { EvaluationTimeline } from "@/modules/ideas/components/evaluation-timeline";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -26,6 +29,8 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
   }
 
   const flags = computeIdeaActionFlags(ctx, { status: idea.status, submittedById: idea.submittedById, departmentId: idea.departmentId });
+  const [evaluations, infoRequests] = await Promise.all([listIdeaEvaluations(ctx, idea.id), listInfoRequests(ctx, idea.id)]);
+  const reviewFlags = computeReviewFlags(ctx, { status: idea.status, submittedById: idea.submittedById }, can(ctx, "idea.evaluate"));
 
   return (
     <div className="flex flex-col gap-5">
@@ -42,6 +47,8 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
       </div>
 
       <IdeaActionBar ideaId={idea.id} flags={flags} />
+
+      <ReviewPanel ideaId={idea.id} flags={reviewFlags} />
 
       <Card>
         <CardHeader>
@@ -79,6 +86,8 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
           </dl>
         </CardContent>
       </Card>
+
+      <EvaluationTimeline evaluations={evaluations} infoRequests={infoRequests} />
     </div>
   );
 }
