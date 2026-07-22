@@ -1,19 +1,35 @@
 // ============================================================================
 // منصة إدارة الابتكار المؤسسي — Institutional Innovation Management Platform
-// Prisma schema — initial institutional-innovation domain (replaces Manara).
+// Prisma schema — Phase 2A alignment with the approved Phase 0 blueprint.
 //
-// Design principles applied here:
-//  - PostgreSQL + CUID ids consistently.
-//  - createdAt / updatedAt on mutable records.
-//  - Soft archival (archivedAt / status) for governance records — no hard delete.
-//  - RBAC + data scope (not a bare role enum): User→UserRole→Role→Permission,
+// Design principles:
+//  - PostgreSQL + CUID ids; createdAt / updatedAt on mutable records.
+//  - Soft archival (archivedAt / archivedById / status) for governance records.
+//  - RBAC + DATA SCOPE (not a bare role enum): User→UserRole→Role→Permission,
 //    each UserRole assignment carries a scopeType (+ optional scopeId).
-//  - Configurable compliance: ComplianceRequirement is data, not hard-coded logic.
-//  - Polymorphic linking (Evidence / Alert / AuditLog) via (entityType, entityId).
-//  - No AIRecommendation / aiScore / healthScore (Manara concepts removed).
+//    Explicit record sharing (ResourceShare) carries allowedActions/allowedFields.
+//  - Registration approval (registrationStatus) is SEPARATE from operational
+//    account status (UserStatus).
+//  - Evidence uses TWO separate status fields — technical fileProcessingStatus
+//    and governance reviewStatus — never one combined enum (+ verificationStatus).
+//  - AI suggestions (DocumentAnalysis / AnalysisSuggestion) are stored SEPARATELY
+//    from official data and never mutate a record without human review.
+//  - Compliance is data-driven: ComplianceSection / ComplianceRequirement +
+//    relational RequirementFieldRule / RequirementEvidenceRule + ComplianceNA +
+//    versioned snapshots. No DGA scoring logic is hard-coded in enums/app code.
+//  - Immutability: finalized IdeaDecision / verified ImpactMeasurement are
+//    write-protected; changes go through superseding / reopening (audited).
 //
-// Run:
-//   npx prisma migrate dev --name init
+// SOFT-REFERENCE ACTOR PATTERN (documented deviation — see
+// docs/architecture/phase-2a-schema-alignment.md §naming): approver/reviewer/
+// finalizer/verifier/archiver/granter/actor id columns are String? references to
+// User.id WITHOUT a DB foreign key (application-validated). Only primary
+// ownership relations are hard FKs. This bounds User back-relations.
+//
+// Generated migration (offline, not applied — no dev DB in this environment):
+//   npx prisma migrate diff \
+//     --from-schema-datamodel <old> --to-schema-datamodel prisma/schema.prisma \
+//     --script > prisma/migrations/<ts>_align_mvp_schema/migration.sql
 // ============================================================================
 
 generator client {
@@ -29,13 +45,23 @@ datasource db {
 // Enums
 // ---------------------------------------------------------------------------
 
+/// Operational account state (separate from registration approval).
 enum UserStatus {
   ACTIVE
   INACTIVE
   SUSPENDED
 }
 
-/// Data scope attached to a role assignment.
+/// Registration/approval lifecycle (separate from UserStatus). New public
+/// registrations begin PENDING with no effective permissions until an Admin
+/// approves and assigns role + scope.
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Data scope attached to a role assignment or a resource share.
 enum ScopeType {
   PLATFORM // entire platform
   ORGANIZATION // a specific organization
@@ -46,7 +72,7 @@ enum ScopeType {
 }
 
 enum OrganizationType {
-  OWNER // the platform-owning organization
+  OWNER // the platform-owning organization (exactly one in MVP)
   INTERNAL // internal entity
   PARTNER
   UNIVERSITY
@@ -73,8 +99,9 @@ enum ActivityStatus {
   CANCELLED
 }
 
-/// Governance workflow stages for ideas (persisted, not just a visual board).
+/// Governance workflow stages for ideas (persisted; the Kanban is a projection).
 enum IdeaStatus {
+  DRAFT
   SUBMITTED
   INITIAL_REVIEW
   TECHNICAL_REVIEW
@@ -82,6 +109,7 @@ enum IdeaStatus {
   APPROVED_FOR_PILOT
   REJECTED
   CONVERTED_TO_SOLUTION
+  WITHDRAWN
   ARCHIVED
 }
 
@@ -177,14 +205,63 @@ enum MeetingStatus {
   CANCELLED
 }
 
-enum EvidenceStatus {
+/// Technical file-processing state (system-driven; NOT governance approval).
+enum FileProcessingStatus {
+  UPLOADED
+  PROCESSING
+  EXTRACTION_READY
+  PROCESSING_FAILED
+}
+
+/// Governance review state of an evidence item (the only status that affects
+/// readiness — reaching APPROVED is a human `evidence.approve` action).
+enum EvidenceReviewStatus {
   DRAFT
   SUBMITTED
+  UNDER_REVIEW
   APPROVED
+  REJECTED
+  ARCHIVED
+}
+
+/// AI document-analysis job state (system worker; produces suggestions only).
+enum DocumentAnalysisStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum DocumentFormat {
+  PDF
+  DOCX
+  XLSX
+}
+
+enum AnalysisSuggestionKind {
+  FIELD
+  REQUIREMENT_MAP
+  IMPACT_ROW
+}
+
+/// Human review outcome for an AI suggestion (kept separate from official data).
+enum SuggestionReviewOutcome {
+  PENDING
+  ACCEPTED
+  EDITED
   REJECTED
 }
 
-/// Whitelisted record types an Evidence item / Alert / Audit entry can point to.
+/// Governed Not-Applicable lifecycle (never automatic).
+enum ComplianceNAState {
+  REQUESTED
+  APPROVED
+  REJECTED
+  REVOKED
+}
+
+/// Whitelisted record types an EvidenceLink / Alert / Audit entry / suggestion
+/// target can point to (application-validated; see EvidenceLink docs).
 enum LinkedEntityType {
   COMPLIANCE_REQUIREMENT
   STRATEGIC_OBJECTIVE
@@ -234,16 +311,23 @@ enum NotificationType {
 // ---------------------------------------------------------------------------
 
 model User {
-  id            String     @id @default(cuid())
-  name          String
-  email         String     @unique
-  emailVerified DateTime?
-  passwordHash  String? // null for external identity providers (Entra ID)
-  image         String?
-  status        UserStatus @default(ACTIVE)
-  jobTitle      String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  id                 String             @id @default(cuid())
+  name               String
+  email              String             @unique
+  emailVerified      DateTime?
+  passwordHash       String? // null for external identity providers (Entra ID)
+  image              String?
+  jobTitle           String?
+  // Operational account state (separate axis from registration approval).
+  status             UserStatus         @default(ACTIVE)
+  // Registration approval lifecycle. Public self-registration starts PENDING;
+  // SYSTEM_ADMIN is never assignable via public registration (app-enforced).
+  registrationStatus RegistrationStatus @default(PENDING)
+  requestedRoleKey   String? // role requested at self-registration (never SYSTEM_ADMIN)
+  approvedById       String? // registration approver (self-relation, hard FK)
+  approvedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   // Auth.js (for future Entra ID / OAuth via the Prisma adapter)
   accounts Account[]
@@ -252,16 +336,24 @@ model User {
   roleAssignments UserRole[]
   memberships     UserMembership[]
 
-  ownedSolutions       InnovationSolution[]  @relation("SolutionOwner")
-  submittedIdeas       Idea[]                @relation("IdeaSubmitter")
-  evaluations          IdeaEvaluation[]
-  decisions            IdeaDecision[]
+  ownedSolutions        InnovationSolution[]   @relation("SolutionOwner")
+  submittedIdeas        Idea[]                 @relation("IdeaSubmitter")
+  evaluations           IdeaEvaluation[]
+  decisions             IdeaDecision[]         @relation("DecisionMaker")
   responsibleAgreements CooperationAgreement[] @relation("AgreementResponsible")
-  uploadedEvidence     Evidence[]
-  assignedAlerts       Alert[]
-  notifications        Notification[]
-  auditLogs            AuditLog[]
+  uploadedEvidence      Evidence[]             @relation("EvidenceUploader")
+  assignedAlerts        Alert[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
 
+  // Registration approver self-relation (bounded).
+  approvedBy    User?  @relation("UserApprovals", fields: [approvedById], references: [id])
+  approvedUsers User[] @relation("UserApprovals")
+
+  // Explicit record shares where this user is the subject (typically partners).
+  resourceShares ResourceShare[] @relation("ShareSubject")
+
+  @@index([registrationStatus])
   @@map("users")
 }
 
@@ -318,6 +410,32 @@ model UserRole {
   @@map("user_roles")
 }
 
+/// Explicit, auditable, revocable sharing of a single solution/agreement with a
+/// user (typically an External Partner). Carries an allow-list of actions and
+/// writable fields — enforced server-side (see authorization.md §5).
+model ResourceShare {
+  id             String           @id @default(cuid())
+  userId         String // subject of the share (hard FK)
+  entityType     LinkedEntityType // INNOVATION_SOLUTION | COOPERATION_AGREEMENT
+  solutionId     String? // set when sharing a solution
+  agreementId    String? // set when sharing an agreement
+  allowedActions String[] // e.g. ["upload_evidence","confirm_attendance"]
+  allowedFields  String[] // per-share writable field allow-list
+  grantedById    String // granter (soft ref → User.id)
+  revokedById    String? // revoker (soft ref → User.id)
+  revokedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user      User                  @relation("ShareSubject", fields: [userId], references: [id], onDelete: Cascade)
+  solution  InnovationSolution?   @relation(fields: [solutionId], references: [id])
+  agreement CooperationAgreement? @relation(fields: [agreementId], references: [id])
+
+  @@index([userId])
+  @@index([entityType, solutionId, agreementId])
+  @@map("resource_shares")
+}
+
 // Auth.js adapter models (used when OAuth/Entra is enabled later)
 model Account {
   id                String  @id @default(cuid())
@@ -362,18 +480,20 @@ model VerificationToken {
 // ---------------------------------------------------------------------------
 
 model Organization {
-  id        String           @id @default(cuid())
-  nameAr    String
-  type      OrganizationType @default(INTERNAL)
-  status    RecordStatus     @default(ACTIVE)
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-  archivedAt DateTime?
+  id           String           @id @default(cuid())
+  nameAr       String
+  type         OrganizationType @default(INTERNAL)
+  status       RecordStatus     @default(ACTIVE)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  archivedAt   DateTime?
+  archivedById String? // soft ref → User.id
 
-  departments  Department[]
-  memberships  UserMembership[]
-  agreements   CooperationAgreement[]
+  departments    Department[]
+  memberships    UserMembership[]
+  agreements     CooperationAgreement[]
   participations SolutionOrganization[]
+  activityRoles  ActivityOrganization[]
 
   @@map("organizations")
 }
@@ -387,16 +507,19 @@ model Department {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   archivedAt     DateTime?
+  archivedById   String? // soft ref → User.id
 
   memberships         UserMembership[]
   solutions           InnovationSolution[]
   activities          InnovationActivity[]
   strategicObjectives StrategicObjective[]
 
+  @@index([organizationId])
   @@map("departments")
 }
 
-/// Which organization / department a user belongs to (feeds data scope).
+/// Which organization / department a user belongs to (feeds default data scope).
+/// (OrganizationMembership in Task B terms; named UserMembership here.)
 model UserMembership {
   id             String        @id @default(cuid())
   userId         String
@@ -416,20 +539,22 @@ model UserMembership {
 // ---------------------------------------------------------------------------
 
 model StrategicObjective {
-  id           String       @id @default(cuid())
-  code         String?
-  titleAr      String
-  description  String?
-  departmentId String?
-  kpi          String?
-  targetValue  String?
-  periodStart  DateTime?
-  periodEnd    DateTime?
-  status       RecordStatus @default(ACTIVE)
-  department   Department?  @relation(fields: [departmentId], references: [id])
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  archivedAt   DateTime?
+  id                String       @id @default(cuid())
+  code              String?
+  titleAr           String
+  description       String?
+  departmentId      String?
+  responsibleUserId String? // soft ref → User.id
+  kpi               String?
+  targetValue       String?
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  status            RecordStatus @default(ACTIVE)
+  department        Department?  @relation(fields: [departmentId], references: [id])
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  archivedAt        DateTime?
+  archivedById      String? // soft ref → User.id
 
   solutions InnovationSolution[]
 
@@ -441,23 +566,39 @@ model StrategicObjective {
 // ---------------------------------------------------------------------------
 
 model InnovationActivity {
-  id           String                 @id @default(cuid())
-  nameAr       String
-  type         InnovationActivityType @default(OTHER)
-  description  String?
-  startDate    DateTime?
-  endDate      DateTime?
+  id                    String                 @id @default(cuid())
+  nameAr                String
+  type                  InnovationActivityType @default(OTHER)
+  description           String?
+  challenge             String? // the challenge/problem addressed
+  startDate             DateTime?
+  endDate               DateTime?
   organizerDepartmentId String?
-  status       ActivityStatus         @default(PLANNED)
-  organizerDepartment   Department?   @relation(fields: [organizerDepartmentId], references: [id])
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
-  archivedAt   DateTime?
+  status                ActivityStatus         @default(PLANNED)
+  organizerDepartment   Department?            @relation(fields: [organizerDepartmentId], references: [id])
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  archivedAt            DateTime?
+  archivedById          String? // soft ref → User.id
 
-  ideas     Idea[]
-  solutions InnovationSolution[]
+  ideas                      Idea[]
+  solutions                  InnovationSolution[]
+  participatingOrganizations ActivityOrganization[]
+  agreementLinks             AgreementActivity[]
 
   @@map("innovation_activities")
+}
+
+/// Participating external organizations on an activity.
+model ActivityOrganization {
+  activityId     String
+  organizationId String
+  role           String? // e.g. "sponsor", "partner"
+  activity       InnovationActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, organizationId])
+  @@map("activity_organizations")
 }
 
 // ---------------------------------------------------------------------------
@@ -465,23 +606,26 @@ model InnovationActivity {
 // ---------------------------------------------------------------------------
 
 model Idea {
-  id            String      @id @default(cuid())
+  id            String              @id @default(cuid())
   titleAr       String
   description   String?
   activityId    String?
   submittedById String?
   departmentId  String?
-  status        IdeaStatus  @default(SUBMITTED)
+  status        IdeaStatus          @default(DRAFT)
   activity      InnovationActivity? @relation(fields: [activityId], references: [id])
-  submittedBy   User?       @relation("IdeaSubmitter", fields: [submittedById], references: [id])
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  submittedBy   User?               @relation("IdeaSubmitter", fields: [submittedById], references: [id])
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
   archivedAt    DateTime?
+  archivedById  String? // soft ref → User.id
 
   evaluations IdeaEvaluation[]
   decisions   IdeaDecision[]
   solution    InnovationSolution? @relation("SolutionFromIdea")
 
+  @@index([status])
+  @@index([departmentId])
   @@map("ideas")
 }
 
@@ -496,19 +640,33 @@ model IdeaEvaluation {
   evaluator   User?           @relation(fields: [evaluatorId], references: [id])
   createdAt   DateTime        @default(now())
 
+  @@index([ideaId])
   @@map("idea_evaluations")
 }
 
+/// A governance decision on an idea. A FINALIZED decision (finalizedAt set) is
+/// immutable — changes go through superseding / reopening, never a silent edit.
 model IdeaDecision {
-  id         String       @id @default(cuid())
-  ideaId     String
-  decidedById String?
-  decision   DecisionType
-  notes      String?
-  idea       Idea         @relation(fields: [ideaId], references: [id], onDelete: Cascade)
-  decidedBy  User?        @relation(fields: [decidedById], references: [id])
-  createdAt  DateTime     @default(now())
+  id               String         @id @default(cuid())
+  ideaId           String
+  decidedById      String?
+  decision         DecisionType
+  notes            String?
+  // Immutability / correction metadata (see status-definitions.md §13).
+  finalizedAt      DateTime?
+  finalizedById    String? // soft ref → User.id
+  supersedesId     String? // this decision supersedes another (self-relation)
+  correctionReason String?
+  reopenedAt       DateTime?
+  reopenedById     String? // soft ref → User.id
+  reopenReason     String?
+  idea             Idea           @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  decidedBy        User?          @relation("DecisionMaker", fields: [decidedById], references: [id])
+  supersedes       IdeaDecision?  @relation("DecisionSupersede", fields: [supersedesId], references: [id])
+  supersededBy     IdeaDecision[] @relation("DecisionSupersede")
+  createdAt        DateTime       @default(now())
 
+  @@index([ideaId])
   @@map("idea_decisions")
 }
 
@@ -532,6 +690,7 @@ model InnovationSolution {
   startDate            DateTime?
   targetEndDate        DateTime?
   actualEndDate        DateTime?
+  durationMonths       Int?
   cost                 Decimal?             @db.Decimal(14, 2)
   targetBeneficiaries  String?
   technologies         String?
@@ -543,6 +702,7 @@ model InnovationSolution {
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   archivedAt           DateTime?
+  archivedById         String? // soft ref → User.id
 
   activity           InnovationActivity? @relation(fields: [activityId], references: [id])
   idea               Idea?               @relation("SolutionFromIdea", fields: [ideaId], references: [id])
@@ -552,6 +712,8 @@ model InnovationSolution {
 
   participatingOrganizations SolutionOrganization[]
   impactIndicators           ImpactIndicator[]
+  shares                     ResourceShare[]
+  agreementLinks             AgreementSolution[]
 
   @@index([owningDepartmentId])
   @@index([maturityStage])
@@ -573,17 +735,17 @@ model SolutionOrganization {
 // ---------------------------------------------------------------------------
 
 model ImpactIndicator {
-  id                String     @id @default(cuid())
+  id                String             @id @default(cuid())
   solutionId        String
   nameAr            String
-  type              ImpactType @default(OPERATIONAL)
+  type              ImpactType         @default(OPERATIONAL)
   unit              String?
-  baselineValue     Decimal?   @db.Decimal(16, 4)
-  targetValue       Decimal?   @db.Decimal(16, 4)
+  baselineValue     Decimal?           @db.Decimal(16, 4)
+  targetValue       Decimal?           @db.Decimal(16, 4)
   measurementMethod String?
   solution          InnovationSolution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
 
   measurements ImpactMeasurement[]
 
@@ -591,19 +753,31 @@ model ImpactIndicator {
   @@map("impact_indicators")
 }
 
+/// A measurement of an indicator. Once VERIFIED (verifiedAt set) it is
+/// write-protected; corrections use a superseding measurement or a documented
+/// reopening — never an in-place edit (see status-definitions.md §13).
 model ImpactMeasurement {
-  id                 String             @id @default(cuid())
+  id                 String              @id @default(cuid())
   indicatorId        String
-  actualValue        Decimal?           @db.Decimal(16, 4)
+  actualValue        Decimal?            @db.Decimal(16, 4)
   periodStart        DateTime?
   periodEnd          DateTime?
   measuredAt         DateTime?
   dataSource         String?
-  verificationStatus VerificationStatus @default(UNVERIFIED)
+  verificationStatus VerificationStatus  @default(UNVERIFIED)
   notes              String?
-  indicator          ImpactIndicator    @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  // Immutability / correction metadata.
+  verifiedAt         DateTime?
+  verifiedById       String? // soft ref → User.id
+  supersedesId       String? // supersedes another measurement (self-relation)
+  reopenedAt         DateTime?
+  reopenedById       String? // soft ref → User.id
+  reopenReason       String?
+  indicator          ImpactIndicator     @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  supersedes         ImpactMeasurement?  @relation("MeasurementSupersede", fields: [supersedesId], references: [id])
+  supersededBy       ImpactMeasurement[] @relation("MeasurementSupersede")
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([indicatorId])
   @@map("impact_measurements")
@@ -614,110 +788,255 @@ model ImpactMeasurement {
 // ---------------------------------------------------------------------------
 
 model CooperationAgreement {
-  id                String          @id @default(cuid())
-  partnerOrgId      String
-  titleAr           String
-  type              AgreementType   @default(MOU)
-  effectiveDate     DateTime?
-  expiryDate        DateTime?
-  renewalStatus     RenewalStatus   @default(NOT_DUE)
-  status            AgreementStatus @default(DRAFT)
-  responsibleUserId String?
-  externalContact   String?
+  id                     String          @id @default(cuid())
+  partnerOrgId           String
+  titleAr                String
+  type                   AgreementType   @default(MOU)
+  effectiveDate          DateTime?
+  expiryDate             DateTime?
+  renewalStatus          RenewalStatus   @default(NOT_DUE)
+  status                 AgreementStatus @default(DRAFT)
+  responsibleUserId      String?
+  externalContact        String?
   meetingFrequencyMonths Int?
-  partnerOrg        Organization    @relation(fields: [partnerOrgId], references: [id])
-  responsibleUser   User?           @relation("AgreementResponsible", fields: [responsibleUserId], references: [id])
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  archivedAt        DateTime?
+  partnerOrg             Organization    @relation(fields: [partnerOrgId], references: [id])
+  responsibleUser        User?           @relation("AgreementResponsible", fields: [responsibleUserId], references: [id])
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  archivedAt             DateTime?
+  archivedById           String? // soft ref → User.id
 
-  meetings AgreementMeeting[]
+  meetings      AgreementMeeting[]
+  shares        ResourceShare[]
+  solutionLinks AgreementSolution[]
+  activityLinks AgreementActivity[]
 
   @@index([partnerOrgId])
   @@map("cooperation_agreements")
 }
 
 model AgreementMeeting {
-  id             String        @id @default(cuid())
-  agreementId    String
-  scheduledDate  DateTime?
-  actualDate     DateTime?
-  status         MeetingStatus @default(SCHEDULED)
-  minutes        String?
-  decisions      String?
-  nextMeetingDate DateTime?
-  agreement      CooperationAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id                      String               @id @default(cuid())
+  agreementId             String
+  scheduledDate           DateTime?
+  actualDate              DateTime?
+  status                  MeetingStatus        @default(SCHEDULED)
+  minutes                 String?
+  decisions               String?
+  nextMeetingDate         DateTime?
+  attendanceConfirmedAt   DateTime?
+  attendanceConfirmedById String? // soft ref → User.id (partner confirms on shared meetings)
+  agreement               CooperationAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
 
   @@index([agreementId])
   @@map("agreement_meetings")
+}
+
+/// Optional link: an agreement is related to a solution.
+model AgreementSolution {
+  agreementId String
+  solutionId  String
+  agreement   CooperationAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  solution    InnovationSolution   @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+
+  @@id([agreementId, solutionId])
+  @@map("agreement_solutions")
+}
+
+/// Optional link: an agreement is related to an activity.
+model AgreementActivity {
+  agreementId String
+  activityId  String
+  agreement   CooperationAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  activity    InnovationActivity   @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@id([agreementId, activityId])
+  @@map("agreement_activities")
 }
 
 // ---------------------------------------------------------------------------
 // Compliance (configurable — stored as data, not hard-coded)
 // ---------------------------------------------------------------------------
 
-model ComplianceRequirement {
-  id                   String  @id @default(cuid())
-  code                 String  @unique // e.g. "5.24.1"
-  sectionCode          String // e.g. "5.24"
-  titleAr              String
-  description          String?
-  version              Int     @default(1)
-  isActive             Boolean @default(true)
-  parentId             String? // grouping under sections / parent requirements
-  requiredFields       Json? // list of required field keys for readiness
-  requiredEvidenceTypes Json? // list of expected evidence types
-  parent               ComplianceRequirement?  @relation("RequirementTree", fields: [parentId], references: [id])
-  children             ComplianceRequirement[] @relation("RequirementTree")
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+/// A grouping of requirements (e.g. section "5.24"). sectionWeight drives the
+/// weighted overall rollup (configuration, not code).
+model ComplianceSection {
+  id            String   @id @default(cuid())
+  code          String   @unique // e.g. "5.24"
+  titleAr       String
+  description   String?
+  sectionWeight Int      @default(1)
+  orderIndex    Int?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  evidenceLinks EvidenceLink[]
+  requirements ComplianceRequirement[]
+
+  @@map("compliance_sections")
+}
+
+/// A configurable requirement node (data, not code). Scoring is expressed via
+/// relational RequirementFieldRule / RequirementEvidenceRule rows + the numeric
+/// config here. No DGA scoring logic is embedded in enums or application code.
+model ComplianceRequirement {
+  id                String                  @id @default(cuid())
+  code              String                  @unique // e.g. "5.24.1"
+  sectionId         String?
+  sectionCode       String? // denormalized section code for convenience
+  titleAr           String
+  description       String?
+  entityType        LinkedEntityType? // record type this requirement inspects
+  version           Int                     @default(1)
+  isActive          Boolean                 @default(true)
+  isEstimated       Boolean                 @default(true) // "internal estimate" label until DGA sign-off
+  requirementWeight Int                     @default(1)
+  gateCeiling       Int                     @default(69) // cap when a mandatory gate is unmet
+  allowNA           Boolean                 @default(false)
+  parentId          String? // grouping under a parent requirement (tree)
+  section           ComplianceSection?      @relation(fields: [sectionId], references: [id])
+  parent            ComplianceRequirement?  @relation("RequirementTree", fields: [parentId], references: [id])
+  children          ComplianceRequirement[] @relation("RequirementTree")
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  fieldRules       RequirementFieldRule[]
+  evidenceRules    RequirementEvidenceRule[]
+  versions         ComplianceRequirementVersion[]
+  naDeterminations ComplianceNA[]
+  evidenceLinks    EvidenceLink[]
+  suggestions      AnalysisSuggestion[]
 
   @@index([sectionCode])
   @@map("compliance_requirements")
 }
 
+/// A required-field rule for a requirement (weight + optional mandatory gate).
+model RequirementFieldRule {
+  id            String                @id @default(cuid())
+  requirementId String
+  fieldKey      String // e.g. "strategicObjectiveId"
+  labelAr       String?
+  rule          String                @default("required") // e.g. "required", "minLength:40"
+  weight        Int                   @default(1)
+  mandatoryGate Boolean               @default(false)
+  optional      Boolean               @default(false)
+  orderIndex    Int?
+  requirement   ComplianceRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  createdAt     DateTime              @default(now())
+
+  @@unique([requirementId, fieldKey])
+  @@map("requirement_field_rules")
+}
+
+/// A required-evidence rule for a requirement (min count + weight + gate).
+model RequirementEvidenceRule {
+  id              String                @id @default(cuid())
+  requirementId   String
+  evidenceTypeKey String // e.g. "APPROVAL_MEMO"
+  labelAr         String?
+  minCount        Int                   @default(1)
+  weight          Int                   @default(1)
+  mandatoryGate   Boolean               @default(false)
+  requirement     ComplianceRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  createdAt       DateTime              @default(now())
+
+  @@unique([requirementId, evidenceTypeKey])
+  @@map("requirement_evidence_rules")
+}
+
+/// Immutable snapshot of a requirement's full config at a given version, kept
+/// for audit (compliance-rules.md §11). The live config is the relational rules.
+model ComplianceRequirementVersion {
+  id            String                @id @default(cuid())
+  requirementId String
+  version       Int
+  snapshot      Json // frozen copy of the requirement + rules at this version
+  createdById   String? // soft ref → User.id
+  requirement   ComplianceRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  createdAt     DateTime              @default(now())
+
+  @@unique([requirementId, version])
+  @@map("compliance_requirement_versions")
+}
+
+/// Governed Not-Applicable determination. Only an APPROVED determination
+/// excludes a requirement from rollups; every state change is audited.
+model ComplianceNA {
+  id            String                @id @default(cuid())
+  requirementId String
+  reason        String
+  state         ComplianceNAState     @default(REQUESTED)
+  scopeRef      Json? // which records/scope the N/A applies to
+  requestedById String // soft ref → User.id
+  approvedById  String? // soft ref → User.id
+  approvedAt    DateTime?
+  revokedById   String? // soft ref → User.id
+  revokedAt     DateTime?
+  requirement   ComplianceRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([requirementId, state])
+  @@map("compliance_nas")
+}
+
 // ---------------------------------------------------------------------------
-// Evidence (polymorphic linking via entityType + entityId)
+// Evidence (two SEPARATE status fields; explicit validated linking)
 // ---------------------------------------------------------------------------
 
 model Evidence {
-  id                 String             @id @default(cuid())
-  title              String
-  fileName           String?
-  fileType           String?
-  storagePath        String?
-  version            Int                @default(1)
-  uploadedById       String?
-  status             EvidenceStatus     @default(DRAFT)
-  verificationStatus VerificationStatus @default(UNVERIFIED)
-  checksum           String?
-  notes              String?
-  uploadedBy         User?              @relation(fields: [uploadedById], references: [id])
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  archivedAt         DateTime?
+  id                   String               @id @default(cuid())
+  title                String
+  classification       String? // evidence type key (e.g. APPROVAL_MEMO) for compliance rules
+  fileName             String?
+  storagePath          String? // storage key/path
+  mimeType             String?
+  sizeBytes            Int?
+  checksum             String?
+  version              Int                  @default(1)
+  uploadedById         String?
+  // Three independent status axes (see status-definitions.md §10–12):
+  fileProcessingStatus FileProcessingStatus @default(UPLOADED) // technical
+  reviewStatus         EvidenceReviewStatus @default(DRAFT) // governance (affects readiness)
+  verificationStatus   VerificationStatus   @default(UNVERIFIED)
+  // Review / approval metadata.
+  reviewedById         String? // soft ref → User.id
+  reviewedAt           DateTime?
+  approvedById         String? // soft ref → User.id
+  approvedAt           DateTime?
+  notes                String?
+  uploadedBy           User?                @relation("EvidenceUploader", fields: [uploadedById], references: [id])
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  archivedAt           DateTime?
+  archivedById         String? // soft ref → User.id
 
-  links EvidenceLink[]
+  links    EvidenceLink[]
+  analysis DocumentAnalysis?
 
+  @@index([fileProcessingStatus])
+  @@index([reviewStatus])
   @@map("evidence")
 }
 
-/// Polymorphic mapping: one evidence item -> one target record (by type + id),
-/// optionally mapped to a compliance requirement. No DB FK on entityId
-/// (application-enforced); entityType is a whitelisted enum.
+/// Explicit, VALIDATED link: one evidence item → one target business record
+/// (by whitelisted entityType + entityId), optionally mapped to a compliance
+/// requirement. entityId has NO DB FK (Prisma has no polymorphic FK); the
+/// server validates that the referenced record exists for entityType AND is in
+/// the caller's scope before creating or exposing the link. entityType is a
+/// whitelist enum. Rationale + trade-offs: docs/architecture/phase-2a-schema-alignment.md.
 model EvidenceLink {
-  id            String           @id @default(cuid())
+  id            String                 @id @default(cuid())
   evidenceId    String
   entityType    LinkedEntityType
   entityId      String
   requirementId String?
-  evidence      Evidence         @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  evidence      Evidence               @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
   requirement   ComplianceRequirement? @relation(fields: [requirementId], references: [id])
-  createdAt     DateTime         @default(now())
+  createdAt     DateTime               @default(now())
 
   @@unique([evidenceId, entityType, entityId])
   @@index([entityType, entityId])
@@ -725,24 +1044,92 @@ model EvidenceLink {
 }
 
 // ---------------------------------------------------------------------------
+// AI document analysis (data-model foundation only — no pipeline in this phase)
+// ---------------------------------------------------------------------------
+
+/// One analysis job per evidence item. COMPLETED means suggestions are ready
+/// for a human — it NEVER approves the evidence.
+model DocumentAnalysis {
+  id                String                 @id @default(cuid())
+  evidenceId        String                 @unique
+  format            DocumentFormat
+  status            DocumentAnalysisStatus @default(QUEUED)
+  provider          String?
+  model             String?
+  extractorVersion  String?
+  promptVersion     String?
+  queuedAt          DateTime               @default(now())
+  startedAt         DateTime?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  error             String?
+  extractedTextMeta Json? // extracted text metadata (coverage, page count, etc.)
+  sourceRefs        Json? // analysis-level source references
+  reviewedById      String? // soft ref → User.id
+  reviewedAt        DateTime?
+  evidence          Evidence               @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  suggestions AnalysisSuggestion[]
+
+  @@index([status])
+  @@map("document_analyses")
+}
+
+/// A single AI suggestion, kept SEPARATE from official data until a human sets
+/// reviewOutcome to ACCEPTED/EDITED (or REJECTED). Full traceability retained.
+model AnalysisSuggestion {
+  id                     String                  @id @default(cuid())
+  analysisId             String
+  kind                   AnalysisSuggestionKind
+  fieldKey               String?
+  suggestedValue         Json?
+  targetEntityType       LinkedEntityType?
+  targetEntityId         String?
+  suggestedRequirementId String?
+  confidence             Float? // 0.0–1.0
+  sourcePage             Int?
+  sourceSection          String?
+  sourceCell             String?
+  sourceExcerpt          String?
+  sourceRef              Json? // structured source reference
+  reviewOutcome          SuggestionReviewOutcome @default(PENDING)
+  reviewedValue          Json? // human-edited value when reviewOutcome = EDITED
+  reviewedById           String? // soft ref → User.id
+  reviewedAt             DateTime?
+  analysis               DocumentAnalysis        @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  suggestedRequirement   ComplianceRequirement?  @relation(fields: [suggestedRequirementId], references: [id])
+  createdAt              DateTime                @default(now())
+
+  @@index([analysisId])
+  @@index([reviewOutcome])
+  @@map("analysis_suggestions")
+}
+
+// ---------------------------------------------------------------------------
 // Alerts, notifications & audit
 // ---------------------------------------------------------------------------
 
 model Alert {
-  id              String           @id @default(cuid())
-  type            AlertType
-  severity        AlertSeverity    @default(WARNING)
-  status          AlertStatus      @default(OPEN)
-  title           String
-  message         String?
-  entityType      LinkedEntityType?
-  entityId        String?
+  id               String            @id @default(cuid())
+  type             AlertType
+  severity         AlertSeverity     @default(WARNING)
+  status           AlertStatus       @default(OPEN)
+  title            String
+  message          String?
+  source           String? // what generated the alert (rule key)
+  entityType       LinkedEntityType?
+  entityId         String?
   assignedToUserId String?
-  dueDate         DateTime?
-  resolvedAt      DateTime?
-  assignedTo      User?            @relation(fields: [assignedToUserId], references: [id])
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  dueDate          DateTime?
+  openedAt         DateTime          @default(now())
+  acknowledgedAt   DateTime?
+  resolvedAt       DateTime?
+  dismissedAt      DateTime?
+  assignedTo       User?             @relation(fields: [assignedToUserId], references: [id])
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   @@index([status, severity])
   @@index([entityType, entityId])
@@ -763,16 +1150,23 @@ model Notification {
   @@map("notifications")
 }
 
+/// Append-only record of a significant action. Never updated or deleted.
 model AuditLog {
-  id          String            @id @default(cuid())
-  actorUserId String?
-  action      String // e.g. CREATE, UPDATE, ARCHIVE, STATUS_CHANGE, APPROVE, EXPORT
-  entityType  LinkedEntityType?
-  entityId    String?
-  summary     String?
-  metadata    Json?
-  actor       User?             @relation(fields: [actorUserId], references: [id])
-  createdAt   DateTime          @default(now())
+  id             String            @id @default(cuid())
+  actorUserId    String?
+  action         String // e.g. CREATE, UPDATE, ARCHIVE, STATUS_CHANGE, APPROVE, REJECT, EXPORT, ROLE_CHANGE
+  entityType     LinkedEntityType?
+  entityId       String?
+  organizationId String? // soft ref → Organization.id (scope context)
+  departmentId   String? // soft ref → Department.id (scope context)
+  summary        String?
+  beforeData     Json?
+  afterData      Json?
+  metadata       Json?
+  ipAddress      String?
+  userAgent      String?
+  actor          User?             @relation(fields: [actorUserId], references: [id])
+  createdAt      DateTime          @default(now())
 
   @@index([entityType, entityId])
   @@index([actorUserId])
