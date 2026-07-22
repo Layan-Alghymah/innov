@@ -3,15 +3,24 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Lightbulb } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { navGroups } from "@/config/navigation";
 import { site } from "@/config/site";
 
-export function AppSidebar({ alertCount = 0, isAdmin = false }: { alertCount?: number; isAdmin?: boolean }) {
+export function AppSidebar({
+  alertCount = 0,
+  isAdmin = false,
+  canViewIdeas = false,
+}: {
+  alertCount?: number;
+  isAdmin?: boolean;
+  canViewIdeas?: boolean;
+}) {
   const pathname = usePathname();
   const adminActive = pathname.startsWith("/admin");
+  const ideasActive = pathname.startsWith("/governance/ideas");
 
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col overflow-y-auto bg-gradient-sidebar px-3.5 py-4 text-slate-200">
@@ -55,6 +64,21 @@ export function AppSidebar({ alertCount = 0, isAdmin = false }: { alertCount?: n
                 </Link>
               );
             })}
+            {canViewIdeas && group.label.includes("5.23") && (
+              <Link
+                href="/governance/ideas"
+                aria-current={ideasActive ? "page" : undefined}
+                className={cn(
+                  "mb-0.5 flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.3px] transition-colors",
+                  ideasActive
+                    ? "bg-secondary font-semibold text-white shadow-lg shadow-secondary/30"
+                    : "text-slate-300 hover:bg-white/5 hover:text-white",
+                )}
+              >
+                <Lightbulb className="h-[18px] w-[18px] shrink-0" />
+                <span className="truncate">الأفكار</span>
+              </Link>
+            )}
           </div>
         ))}
 

@@ -11,10 +11,11 @@ import { urgentAlertsCount } from "@/modules/alerts/mock";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const isAdmin = can(user, "user.manage");
+  const canViewIdeas = can(user, "idea.view");
 
   return (
     <div className="flex min-h-screen bg-bg dark:bg-bg-dark">
-      <AppSidebar alertCount={urgentAlertsCount} isAdmin={isAdmin} />
+      <AppSidebar alertCount={urgentAlertsCount} isAdmin={isAdmin} canViewIdeas={canViewIdeas} />
       <div className="flex min-h-screen flex-1 flex-col">
         <Topbar userName={user.name} />
         <main className="flex-1 p-6 lg:p-7">{children}</main>
