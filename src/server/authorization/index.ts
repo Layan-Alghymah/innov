@@ -20,6 +20,8 @@ export {
   requireScope,
   requirePublished,
   requireOwnership,
+  ideaScopeWhere,
+  requireDepartmentScope,
   type EffectiveScopes,
 } from "./scope";
 export {

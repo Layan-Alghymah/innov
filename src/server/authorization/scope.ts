@@ -94,9 +94,12 @@ export async function findSolutionsInScope(
  * Currently supports INNOVATION_SOLUTION (the canonical scoped entity).
  */
 export async function requireScope(ctx: AccessContext, entityType: LinkedEntityType, entityId: string): Promise<void> {
-  if (entityType !== "INNOVATION_SOLUTION") {
-    throw new AuthorizationError("OUT_OF_SCOPE", `scope check not implemented for ${entityType}`);
-  }
+  if (entityType === "INNOVATION_SOLUTION") return requireSolutionScope(ctx, entityId);
+  if (entityType === "IDEA") return requireIdeaScope(ctx, entityId);
+  throw new AuthorizationError("OUT_OF_SCOPE", `scope check not implemented for ${entityType}`);
+}
+
+async function requireSolutionScope(ctx: AccessContext, entityId: string): Promise<void> {
   const es = effectiveScopes(ctx);
   if (es.platform) {
     const exists = await prisma.innovationSolution.findUnique({ where: { id: entityId }, select: { id: true } });
@@ -116,6 +119,52 @@ export async function requireScope(ctx: AccessContext, entityType: LinkedEntityT
   if (es.solutionIds.includes(sol.id) || shareSolutionIds.includes(sol.id)) return;
   if (es.published && sol.publishedAt) return;
 
+  throw new AuthorizationError("OUT_OF_SCOPE");
+}
+
+async function requireIdeaScope(ctx: AccessContext, entityId: string): Promise<void> {
+  const es = effectiveScopes(ctx);
+  if (es.platform) {
+    const exists = await prisma.idea.findUnique({ where: { id: entityId }, select: { id: true } });
+    if (!exists) throw new AuthorizationError("NOT_FOUND");
+    return;
+  }
+  const idea = await prisma.idea.findUnique({
+    where: { id: entityId },
+    select: { id: true, submittedById: true, departmentId: true, department: { select: { organizationId: true } } },
+  });
+  if (!idea) throw new AuthorizationError("NOT_FOUND");
+
+  if (idea.submittedById && idea.submittedById === ctx.userId) return; // author always
+  if (idea.departmentId && es.departmentIds.includes(idea.departmentId)) return;
+  if (idea.department && es.organizationIds.includes(idea.department.organizationId)) return;
+
+  throw new AuthorizationError("OUT_OF_SCOPE");
+}
+
+/**
+ * WHERE fragment restricting Idea rows to the caller's scope: their own
+ * authored ideas plus ideas owned by a department/organization they hold.
+ * PLATFORM → unrestricted.
+ */
+export function ideaScopeWhere(ctx: AccessContext): Prisma.IdeaWhereInput {
+  const es = effectiveScopes(ctx);
+  if (es.platform) return {};
+  const or: Prisma.IdeaWhereInput[] = [{ submittedById: ctx.userId }];
+  if (es.departmentIds.length) or.push({ departmentId: { in: es.departmentIds } });
+  if (es.organizationIds.length) or.push({ department: { organizationId: { in: es.organizationIds } } });
+  return { OR: or };
+}
+
+/** Assert the caller may OWN a record in this department (create/re-home). */
+export async function requireDepartmentScope(ctx: AccessContext, departmentId: string): Promise<void> {
+  const es = effectiveScopes(ctx);
+  if (es.platform) return;
+  if (es.departmentIds.includes(departmentId)) return;
+  if (es.organizationIds.length) {
+    const dept = await prisma.department.findUnique({ where: { id: departmentId }, select: { organizationId: true } });
+    if (dept && es.organizationIds.includes(dept.organizationId)) return;
+  }
   throw new AuthorizationError("OUT_OF_SCOPE");
 }
 

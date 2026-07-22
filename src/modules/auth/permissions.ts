@@ -92,8 +92,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleKey, PermissionKey[]> = {
     PERMISSIONS.SOLUTION_VIEW,
   ],
   VIEWER: [
+    // Per roles-and-permissions.md §7, a Viewer's idea.view is NOT a default
+    // grant — it is grantable per-user only for explicitly published records.
+    // So idea.view is intentionally excluded here (Viewer has no idea access).
     PERMISSIONS.SOLUTION_VIEW,
-    PERMISSIONS.IDEA_VIEW,
     PERMISSIONS.IMPACT_VIEW,
     PERMISSIONS.AGREEMENT_VIEW,
     PERMISSIONS.EVIDENCE_VIEW,

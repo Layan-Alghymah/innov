@@ -521,6 +521,7 @@ model Department {
   solutions           InnovationSolution[]
   activities          InnovationActivity[]
   strategicObjectives StrategicObjective[]
+  ideas               Idea[]
 
   @@index([organizationId])
   @@map("departments")
@@ -623,6 +624,7 @@ model Idea {
   status        IdeaStatus          @default(DRAFT)
   activity      InnovationActivity? @relation(fields: [activityId], references: [id])
   submittedBy   User?               @relation("IdeaSubmitter", fields: [submittedById], references: [id])
+  department    Department?         @relation(fields: [departmentId], references: [id])
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   archivedAt    DateTime?
