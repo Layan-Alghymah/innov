@@ -9,6 +9,15 @@ out
 build
 dist
 
+# build info / caches
+tsconfig.tsbuildinfo
+.turbo
+.vercel
+
+# test output
+playwright-report
+test-results
+
 # production
 coverage
 
