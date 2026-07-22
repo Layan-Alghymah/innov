@@ -4,11 +4,11 @@
 -- WARNING: drops Evidence.status/fileType and ComplianceRequirement.requiredFields/requiredEvidenceTypes/sectionCode-as-column;
 -- zero live data at risk (no database has ever been provisioned).
 --
--- APPLY-TIME CAVEAT (PostgreSQL): this file both ADDs values to enum "IdeaStatus"
--- and sets a DEFAULT that uses a new value ('DRAFT'). On some PostgreSQL versions
--- a newly added enum value cannot be used in the SAME transaction. If `prisma
--- migrate deploy` errors here, split into two migrations: (1) ALTER TYPE ADD VALUE,
--- (2) the ALTER TABLE ... SET DEFAULT 'DRAFT'. See phase-2a-schema-alignment.md.
+-- RESOLVED PostgreSQL enum/default caveat: verified on PostgreSQL 16.14, this
+-- migration's "ADD VALUE 'DRAFT'" + "SET DEFAULT 'DRAFT'" in one transaction
+-- failed with 55P04 ("unsafe use of new value"). The SET DEFAULT was split into
+-- the follow-up migration 20260722130001_ideas_status_default_draft so the new
+-- enum value is committed first. See phase-2a-schema-alignment.md §Live PostgreSQL Verification.
 
 -- CreateEnum
 CREATE TYPE "RegistrationStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
@@ -66,8 +66,12 @@ ALTER TABLE "innovation_activities" ADD COLUMN     "archivedById" TEXT,
 ADD COLUMN     "challenge" TEXT;
 
 -- AlterTable
-ALTER TABLE "ideas" ADD COLUMN     "archivedById" TEXT,
-ALTER COLUMN "status" SET DEFAULT 'DRAFT';
+-- NOTE: the "ideas.status SET DEFAULT 'DRAFT'" statement was intentionally
+-- MOVED to the following migration (20260722130001_ideas_status_default_draft)
+-- so the new "DRAFT" enum value is committed before it is used, avoiding
+-- PostgreSQL error 55P04 ("unsafe use of new value ... of enum type"). The
+-- ADD VALUE statements above remain here and commit with this migration.
+ALTER TABLE "ideas" ADD COLUMN     "archivedById" TEXT;
 
 -- AlterTable
 ALTER TABLE "idea_decisions" ADD COLUMN     "correctionReason" TEXT,

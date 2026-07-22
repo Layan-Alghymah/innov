@@ -185,3 +185,28 @@ erDiagram
 - **English enum/model identifiers**; approved Arabic labels stay in `...Ar` fields / the UI, never in enum identifiers.
 - **Consistent conventions:** `cuid()` ids; `createdAt`/`updatedAt` on mutable records; `archivedAt`/`archivedById` for archival; `*Id` for foreign/soft references.
 - **No duplicate enums:** e.g. `RecordStatus` reused for org/dept/objective/solution; `LinkedEntityType` reused for evidence links, alerts, audit, and suggestion targets.
+
+---
+
+## Live PostgreSQL Verification (Phase 2A.1)
+
+The Phase 2A migration was originally generated offline (no DB then reachable). Phase 2A.1 verified it against a live PostgreSQL server from zero.
+
+- **Environment type:** local **disposable** development database — a throwaway Docker container (`postgres:16-alpine`, throwaway credentials, port `5544`), targeted via an inline `DATABASE_URL` override so `.env` (which points at an unrelated, unreachable `:5433`) was never modified. **Not** a shared or production database; recreated from scratch, not `migrate reset`.
+- **PostgreSQL version:** 16.14.
+- **Migration commands:** `npx prisma migrate deploy`, `npx prisma migrate status`, `npx prisma migrate diff --from-url <db> --to-schema-datamodel prisma/schema.prisma` (drift check), `npx prisma validate`, `npx prisma generate`, `npm run db:seed`.
+- **Migrations applied:** yes — all three apply cleanly from an empty database (`20260722005753_init` → `20260722130000_align_mvp_schema` → `20260722130001_ideas_status_default_draft`); `migrate status` = "Database schema is up to date"; drift check = empty (DB matches `schema.prisma`).
+- **Seed ran:** yes. Verified counts (no password hashes read): 1 owner org, 2 internal departments, 1 external (UNIVERSITY) org, 4 users across all 4 role categories (SYSTEM_ADMIN/INTERNAL_EDITOR/EXTERNAL_PARTNER/VIEWER) with scopes PLATFORM/DEPARTMENT/SOLUTION/PUBLISHED; 1 each of strategic objective, activity, idea, solution, impact indicator, agreement, meeting; 2 compliance sections, 5 requirements, 1 field rule, 1 evidence rule, 1 resource share.
+- **Verification results:** 12/12 schema invariants passed via a temporary (untracked, since-deleted) script — registration vs operational status separate; SYSTEM_ADMIN only via role assignment (no demo user requested it); Idea default `DRAFT` + transitions; Evidence `fileProcessingStatus` independent of `reviewStatus`; `DocumentAnalysis`+`AnalysisSuggestion` relational create; `ResourceShare` action/field arrays; requirement↔section+rules; `ComplianceNA` reason + REQUESTED→APPROVED lifecycle; finalized `IdeaDecision` superseding/reopening; verified `ImpactMeasurement` superseding; `AuditLog` before/after JSON + org/dept scope refs; `EvidenceLink` unique constraint rejects duplicates (P2002).
+
+### Migration correction made
+
+Applying `20260722130000_align_mvp_schema` initially failed on live PostgreSQL with **`55P04` — "unsafe use of new value 'DRAFT' of enum type IdeaStatus"**: the documented caveat was real. That migration both `ADD VALUE 'DRAFT'` to `IdeaStatus` and `SET DEFAULT 'DRAFT'` on `ideas.status` in the same transaction, which PostgreSQL forbids (a new enum value must be committed before use).
+
+**Fix (migration-only, history-preserving):** the `SET DEFAULT 'DRAFT'` statement was moved out of `20260722130000_align_mvp_schema` into a new follow-up migration **`20260722130001_ideas_status_default_draft`**, so the enum value is committed by the prior migration before it is used. The `ADD VALUE` statements remain in the align migration. No existing migration was deleted or renamed; the schema and seed were unchanged. After the split, all three migrations apply cleanly and there is no drift.
+
+### Remaining limitations
+
+- Verification used PostgreSQL 16.14; the managed cloud target version should be confirmed in deployment (behavior is expected to be identical for PG 12+).
+- The disposable container is ephemeral and not committed; a reviewer reproduces it with the Task E sequence (`npm install` → `npx prisma generate` → `npx prisma migrate deploy` → `npm run db:seed`) against their own `DATABASE_URL`.
+- Enforcement (scope/immutability/audit-writing) remains schema-only — deferred to Phase 2B/2C, unchanged by this phase.
