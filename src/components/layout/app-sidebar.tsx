@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { ShieldCheck } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { navGroups } from "@/config/navigation";
 import { site } from "@/config/site";
 
-export function AppSidebar({ alertCount = 0 }: { alertCount?: number }) {
+export function AppSidebar({ alertCount = 0, isAdmin = false }: { alertCount?: number; isAdmin?: boolean }) {
   const pathname = usePathname();
+  const adminActive = pathname.startsWith("/admin");
 
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col overflow-y-auto bg-gradient-sidebar px-3.5 py-4 text-slate-200">
@@ -54,6 +57,25 @@ export function AppSidebar({ alertCount = 0 }: { alertCount?: number }) {
             })}
           </div>
         ))}
+
+        {isAdmin && (
+          <div>
+            <div className="px-2.5 pb-1.5 pt-3.5 text-[10.5px] text-slate-400">إدارة النظام</div>
+            <Link
+              href="/admin/users/requests"
+              aria-current={adminActive ? "page" : undefined}
+              className={cn(
+                "mb-0.5 flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.3px] transition-colors",
+                adminActive
+                  ? "bg-secondary font-semibold text-white shadow-lg shadow-secondary/30"
+                  : "text-slate-300 hover:bg-white/5 hover:text-white",
+              )}
+            >
+              <ShieldCheck className="h-[18px] w-[18px] shrink-0" />
+              <span className="truncate">طلبات التسجيل والحسابات</span>
+            </Link>
+          </div>
+        )}
       </nav>
     </aside>
   );

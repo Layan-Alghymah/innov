@@ -1,6 +1,6 @@
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { Topbar } from "@/components/layout/topbar";
-import { requireUser } from "@/server/authz";
+import { requireUser, can } from "@/server/authz";
 import { urgentAlertsCount } from "@/modules/alerts/mock";
 
 /**
@@ -10,10 +10,11 @@ import { urgentAlertsCount } from "@/modules/alerts/mock";
  */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
+  const isAdmin = can(user, "user.manage");
 
   return (
     <div className="flex min-h-screen bg-bg dark:bg-bg-dark">
-      <AppSidebar alertCount={urgentAlertsCount} />
+      <AppSidebar alertCount={urgentAlertsCount} isAdmin={isAdmin} />
       <div className="flex min-h-screen flex-1 flex-col">
         <Topbar userName={user.name} />
         <main className="flex-1 p-6 lg:p-7">{children}</main>
