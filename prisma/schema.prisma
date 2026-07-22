@@ -1,5 +1,20 @@
-// Innovation Management Platform — Prisma Schema
-// Run: npx prisma migrate dev --name init
+// ============================================================================
+// منصة إدارة الابتكار المؤسسي — Institutional Innovation Management Platform
+// Prisma schema — initial institutional-innovation domain (replaces Manara).
+//
+// Design principles applied here:
+//  - PostgreSQL + CUID ids consistently.
+//  - createdAt / updatedAt on mutable records.
+//  - Soft archival (archivedAt / status) for governance records — no hard delete.
+//  - RBAC + data scope (not a bare role enum): User→UserRole→Role→Permission,
+//    each UserRole assignment carries a scopeType (+ optional scopeId).
+//  - Configurable compliance: ComplianceRequirement is data, not hard-coded logic.
+//  - Polymorphic linking (Evidence / Alert / AuditLog) via (entityType, entityId).
+//  - No AIRecommendation / aiScore / healthScore (Manara concepts removed).
+//
+// Run:
+//   npx prisma migrate dev --name init
+// ============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -10,22 +25,201 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Role {
-  MANAGER
-  EMPLOYEE
-  INNOVATOR
-}
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
 
 enum UserStatus {
   ACTIVE
   INACTIVE
+  SUSPENDED
 }
 
-enum ProjectStatus {
-  PLANNING
-  ACTIVE
-  AT_RISK
+/// Data scope attached to a role assignment.
+enum ScopeType {
+  PLATFORM // entire platform
+  ORGANIZATION // a specific organization
+  DEPARTMENT // a specific department
+  AGREEMENT // a specific cooperation agreement
+  SOLUTION // a specific innovation solution
+  PUBLISHED // read-only published information only
+}
+
+enum OrganizationType {
+  OWNER // the platform-owning organization
+  INTERNAL // internal entity
+  PARTNER
+  UNIVERSITY
+  COMPANY
+  GOVERNMENT
+  OTHER
+}
+
+enum InnovationActivityType {
+  HACKATHON
+  INNOVATION_CAMP
+  WORKSHOP
+  CHALLENGE
+  INTERNAL_IDEATION
+  OPEN_INNOVATION
+  COMPETITION
+  OTHER
+}
+
+enum ActivityStatus {
+  PLANNED
+  ONGOING
   COMPLETED
+  CANCELLED
+}
+
+/// Governance workflow stages for ideas (persisted, not just a visual board).
+enum IdeaStatus {
+  SUBMITTED
+  INITIAL_REVIEW
+  TECHNICAL_REVIEW
+  MORE_INFO_REQUESTED
+  APPROVED_FOR_PILOT
+  REJECTED
+  CONVERTED_TO_SOLUTION
+  ARCHIVED
+}
+
+enum EvaluationStage {
+  INITIAL
+  TECHNICAL
+  COMMITTEE
+}
+
+enum DecisionType {
+  APPROVE_FOR_PILOT
+  REJECT
+  REQUEST_MORE_INFO
+  CONVERT_TO_SOLUTION
+  DEFER
+}
+
+enum SolutionSource {
+  ACTIVITY // produced by an innovation activity/event
+  INTERNAL_PROPOSAL
+  EXTERNAL_PARTNERSHIP
+}
+
+enum MaturityStage {
+  CONCEPT
+  PROTOTYPE
+  POC // proof of concept
+  PILOT // trial version
+  OPERATIONAL // in production use
+}
+
+enum ImplementationStatus {
+  PLANNING
+  IN_PROGRESS
+  OPERATING
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum RecordStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum ImpactType {
+  FINANCIAL
+  OPERATIONAL
+  BENEFICIARY
+  TIME_REDUCTION
+  COST_REDUCTION
+  QUALITY
+  PRODUCTIVITY
+  SATISFACTION
+  ENVIRONMENTAL
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum AgreementType {
+  MOU
+  PARTNERSHIP
+  RESEARCH
+  SERVICE
+  OTHER
+}
+
+enum AgreementStatus {
+  DRAFT
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum RenewalStatus {
+  NOT_DUE
+  DUE_SOON
+  IN_PROGRESS
+  RENEWED
+  LAPSED
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  HELD
+  MISSED
+  CANCELLED
+}
+
+enum EvidenceStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+/// Whitelisted record types an Evidence item / Alert / Audit entry can point to.
+enum LinkedEntityType {
+  COMPLIANCE_REQUIREMENT
+  STRATEGIC_OBJECTIVE
+  INNOVATION_ACTIVITY
+  IDEA
+  INNOVATION_SOLUTION
+  IMPACT_MEASUREMENT
+  COOPERATION_AGREEMENT
+  AGREEMENT_MEETING
+  REPORT
+}
+
+enum AlertType {
+  MEETING_OVERDUE
+  MEETING_UPCOMING
+  AGREEMENT_EXPIRY
+  AGREEMENT_RENEWAL
+  MISSING_EVIDENCE
+  INCOMPLETE_SOLUTION
+  IMPACT_WINDOW
+  EVALUATION_DEADLINE
+  APPROVAL_TASK
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
 }
 
 enum NotificationType {
@@ -35,178 +229,552 @@ enum NotificationType {
   DANGER
 }
 
-enum RecommendationPriority {
-  HIGH
-  MEDIUM
-  LOW
-}
-
-enum RecommendationCategory {
-  RISK
-  PERFORMANCE
-  RESOURCE
-  TIMELINE
-}
+// ---------------------------------------------------------------------------
+// Identity, RBAC & data scope
+// ---------------------------------------------------------------------------
 
 model User {
-  id             String       @id @default(cuid())
-  name           String
-  email          String       @unique
-  passwordHash   String
-  role           Role         @default(EMPLOYEE)
-  status         UserStatus   @default(ACTIVE)
-  avatarUrl      String?
-  specialization String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id            String     @id @default(cuid())
+  name          String
+  email         String     @unique
+  emailVerified DateTime?
+  passwordHash  String? // null for external identity providers (Entra ID)
+  image         String?
+  status        UserStatus @default(ACTIVE)
+  jobTitle      String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
-  projectsCreated   Project[]         @relation("ProjectCreator")
-  assignedProjects  ProjectMember[]
-  reports           Report[]
-  activities        Activity[]
-  notifications     Notification[]
-  comments          Comment[]
-  files             File[]
-  permissions       UserPermission[]
+  // Auth.js (for future Entra ID / OAuth via the Prisma adapter)
+  accounts Account[]
+  sessions Session[]
+
+  roleAssignments UserRole[]
+  memberships     UserMembership[]
+
+  ownedSolutions       InnovationSolution[]  @relation("SolutionOwner")
+  submittedIdeas       Idea[]                @relation("IdeaSubmitter")
+  evaluations          IdeaEvaluation[]
+  decisions            IdeaDecision[]
+  responsibleAgreements CooperationAgreement[] @relation("AgreementResponsible")
+  uploadedEvidence     Evidence[]
+  assignedAlerts       Alert[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
 
   @@map("users")
 }
 
+model Role {
+  id          String  @id @default(cuid())
+  key         String  @unique // e.g. SYSTEM_ADMIN, INTERNAL_EDITOR, EXTERNAL_PARTNER, VIEWER
+  nameAr      String
+  description String?
+  isSystem    Boolean @default(false) // system roles cannot be deleted
+
+  permissions RolePermission[]
+  assignments UserRole[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("roles")
+}
+
 model Permission {
-  id          String @id @default(cuid())
-  key         String @unique
-  label       String
+  id          String  @id @default(cuid())
+  key         String  @unique // e.g. solution.create, evidence.approve, compliance.export
+  nameAr      String
   description String?
 
-  users UserPermission[]
+  roles RolePermission[]
 
   @@map("permissions")
 }
 
-model UserPermission {
-  id           String     @id @default(cuid())
-  userId       String
+model RolePermission {
+  roleId       String
   permissionId String
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, permissionId])
-  @@map("user_permissions")
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
 }
 
-model Project {
-  id           String        @id @default(cuid())
-  name         String
-  description  String
-  domain       String
-  status       ProjectStatus @default(PLANNING)
-  progress     Int           @default(0)
-  healthScore  Int           @default(0)
-  aiScore      Int           @default(0)
-  startDate    DateTime
-  endDate      DateTime
-  createdById  String
-  createdBy    User          @relation("ProjectCreator", fields: [createdById], references: [id])
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  members         ProjectMember[]
-  reports         Report[]
-  activities      Activity[]
-  files           File[]
-  comments        Comment[]
-  recommendations AIRecommendation[]
-
-  @@map("projects")
-}
-
-model ProjectMember {
-  id        String   @id @default(cuid())
-  projectId String
+/// A role granted to a user WITHIN a data scope (role + scope = authorization).
+model UserRole {
+  id        String    @id @default(cuid())
   userId    String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assignedAt DateTime @default(now())
+  roleId    String
+  scopeType ScopeType @default(PLATFORM)
+  scopeId   String? // id of the org / department / agreement / solution when scoped
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
 
-  @@unique([projectId, userId])
-  @@map("project_members")
+  @@unique([userId, roleId, scopeType, scopeId])
+  @@index([scopeType, scopeId])
+  @@map("user_roles")
 }
 
-model Report {
-  id        String   @id @default(cuid())
-  projectId String
-  authorId  String
-  title     String
-  content   String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
+// Auth.js adapter models (used when OAuth/Entra is enabled later)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("reports")
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
 }
 
-model Activity {
-  id        String   @id @default(cuid())
-  projectId String?
-  userId    String
-  action    String
-  target    String
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id])
-  createdAt DateTime @default(now())
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("activities")
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Organizations & departments
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String           @id @default(cuid())
+  nameAr    String
+  type      OrganizationType @default(INTERNAL)
+  status    RecordStatus     @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  archivedAt DateTime?
+
+  departments  Department[]
+  memberships  UserMembership[]
+  agreements   CooperationAgreement[]
+  participations SolutionOrganization[]
+
+  @@map("organizations")
+}
+
+model Department {
+  id             String       @id @default(cuid())
+  organizationId String
+  nameAr         String
+  status         RecordStatus @default(ACTIVE)
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  archivedAt     DateTime?
+
+  memberships         UserMembership[]
+  solutions           InnovationSolution[]
+  activities          InnovationActivity[]
+  strategicObjectives StrategicObjective[]
+
+  @@map("departments")
+}
+
+/// Which organization / department a user belongs to (feeds data scope).
+model UserMembership {
+  id             String        @id @default(cuid())
+  userId         String
+  organizationId String?
+  departmentId   String?
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  department     Department?   @relation(fields: [departmentId], references: [id])
+  createdAt      DateTime      @default(now())
+
+  @@unique([userId, organizationId, departmentId])
+  @@map("user_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// Strategy (5.23.1)
+// ---------------------------------------------------------------------------
+
+model StrategicObjective {
+  id           String       @id @default(cuid())
+  code         String?
+  titleAr      String
+  description  String?
+  departmentId String?
+  kpi          String?
+  targetValue  String?
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  status       RecordStatus @default(ACTIVE)
+  department   Department?  @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  archivedAt   DateTime?
+
+  solutions InnovationSolution[]
+
+  @@map("strategic_objectives")
+}
+
+// ---------------------------------------------------------------------------
+// Activities & events (5.23.2)
+// ---------------------------------------------------------------------------
+
+model InnovationActivity {
+  id           String                 @id @default(cuid())
+  nameAr       String
+  type         InnovationActivityType @default(OTHER)
+  description  String?
+  startDate    DateTime?
+  endDate      DateTime?
+  organizerDepartmentId String?
+  status       ActivityStatus         @default(PLANNED)
+  organizerDepartment   Department?   @relation(fields: [organizerDepartmentId], references: [id])
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  archivedAt   DateTime?
+
+  ideas     Idea[]
+  solutions InnovationSolution[]
+
+  @@map("innovation_activities")
+}
+
+// ---------------------------------------------------------------------------
+// Governance (5.23.3) — ideas, evaluations, decisions
+// ---------------------------------------------------------------------------
+
+model Idea {
+  id            String      @id @default(cuid())
+  titleAr       String
+  description   String?
+  activityId    String?
+  submittedById String?
+  departmentId  String?
+  status        IdeaStatus  @default(SUBMITTED)
+  activity      InnovationActivity? @relation(fields: [activityId], references: [id])
+  submittedBy   User?       @relation("IdeaSubmitter", fields: [submittedById], references: [id])
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  archivedAt    DateTime?
+
+  evaluations IdeaEvaluation[]
+  decisions   IdeaDecision[]
+  solution    InnovationSolution? @relation("SolutionFromIdea")
+
+  @@map("ideas")
+}
+
+model IdeaEvaluation {
+  id          String          @id @default(cuid())
+  ideaId      String
+  evaluatorId String?
+  stage       EvaluationStage @default(INITIAL)
+  score       Int?
+  notes       String?
+  idea        Idea            @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  evaluator   User?           @relation(fields: [evaluatorId], references: [id])
+  createdAt   DateTime        @default(now())
+
+  @@map("idea_evaluations")
+}
+
+model IdeaDecision {
+  id         String       @id @default(cuid())
+  ideaId     String
+  decidedById String?
+  decision   DecisionType
+  notes      String?
+  idea       Idea         @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  decidedBy  User?        @relation(fields: [decidedById], references: [id])
+  createdAt  DateTime     @default(now())
+
+  @@map("idea_decisions")
+}
+
+// ---------------------------------------------------------------------------
+// Innovation solutions registry (5.24.1)
+// ---------------------------------------------------------------------------
+
+model InnovationSolution {
+  id                   String               @id @default(cuid())
+  nameAr               String
+  description          String?
+  problemStatement     String?
+  source               SolutionSource       @default(INTERNAL_PROPOSAL)
+  activityId           String?
+  ideaId               String?              @unique
+  owningDepartmentId   String?
+  strategicObjectiveId String?
+  ownerUserId          String?
+  maturityStage        MaturityStage        @default(CONCEPT)
+  implementationStatus ImplementationStatus @default(PLANNING)
+  startDate            DateTime?
+  targetEndDate        DateTime?
+  actualEndDate        DateTime?
+  cost                 Decimal?             @db.Decimal(14, 2)
+  targetBeneficiaries  String?
+  technologies         String?
+  completionPct        Int                  @default(0)
+  evidenceReadinessPct Int                  @default(0)
+  risks                String?
+  notes                String?
+  status               RecordStatus         @default(DRAFT)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  archivedAt           DateTime?
+
+  activity           InnovationActivity? @relation(fields: [activityId], references: [id])
+  idea               Idea?               @relation("SolutionFromIdea", fields: [ideaId], references: [id])
+  owningDepartment   Department?         @relation(fields: [owningDepartmentId], references: [id])
+  strategicObjective StrategicObjective? @relation(fields: [strategicObjectiveId], references: [id])
+  owner              User?               @relation("SolutionOwner", fields: [ownerUserId], references: [id])
+
+  participatingOrganizations SolutionOrganization[]
+  impactIndicators           ImpactIndicator[]
+
+  @@index([owningDepartmentId])
+  @@index([maturityStage])
+  @@map("innovation_solutions")
+}
+
+model SolutionOrganization {
+  solutionId     String
+  organizationId String
+  solution       InnovationSolution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([solutionId, organizationId])
+  @@map("solution_organizations")
+}
+
+// ---------------------------------------------------------------------------
+// Impact measurement (5.24.2)
+// ---------------------------------------------------------------------------
+
+model ImpactIndicator {
+  id                String     @id @default(cuid())
+  solutionId        String
+  nameAr            String
+  type              ImpactType @default(OPERATIONAL)
+  unit              String?
+  baselineValue     Decimal?   @db.Decimal(16, 4)
+  targetValue       Decimal?   @db.Decimal(16, 4)
+  measurementMethod String?
+  solution          InnovationSolution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  measurements ImpactMeasurement[]
+
+  @@index([solutionId])
+  @@map("impact_indicators")
+}
+
+model ImpactMeasurement {
+  id                 String             @id @default(cuid())
+  indicatorId        String
+  actualValue        Decimal?           @db.Decimal(16, 4)
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  measuredAt         DateTime?
+  dataSource         String?
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  notes              String?
+  indicator          ImpactIndicator    @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([indicatorId])
+  @@map("impact_measurements")
+}
+
+// ---------------------------------------------------------------------------
+// Partners, agreements & meetings
+// ---------------------------------------------------------------------------
+
+model CooperationAgreement {
+  id                String          @id @default(cuid())
+  partnerOrgId      String
+  titleAr           String
+  type              AgreementType   @default(MOU)
+  effectiveDate     DateTime?
+  expiryDate        DateTime?
+  renewalStatus     RenewalStatus   @default(NOT_DUE)
+  status            AgreementStatus @default(DRAFT)
+  responsibleUserId String?
+  externalContact   String?
+  meetingFrequencyMonths Int?
+  partnerOrg        Organization    @relation(fields: [partnerOrgId], references: [id])
+  responsibleUser   User?           @relation("AgreementResponsible", fields: [responsibleUserId], references: [id])
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  archivedAt        DateTime?
+
+  meetings AgreementMeeting[]
+
+  @@index([partnerOrgId])
+  @@map("cooperation_agreements")
+}
+
+model AgreementMeeting {
+  id             String        @id @default(cuid())
+  agreementId    String
+  scheduledDate  DateTime?
+  actualDate     DateTime?
+  status         MeetingStatus @default(SCHEDULED)
+  minutes        String?
+  decisions      String?
+  nextMeetingDate DateTime?
+  agreement      CooperationAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([agreementId])
+  @@map("agreement_meetings")
+}
+
+// ---------------------------------------------------------------------------
+// Compliance (configurable — stored as data, not hard-coded)
+// ---------------------------------------------------------------------------
+
+model ComplianceRequirement {
+  id                   String  @id @default(cuid())
+  code                 String  @unique // e.g. "5.24.1"
+  sectionCode          String // e.g. "5.24"
+  titleAr              String
+  description          String?
+  version              Int     @default(1)
+  isActive             Boolean @default(true)
+  parentId             String? // grouping under sections / parent requirements
+  requiredFields       Json? // list of required field keys for readiness
+  requiredEvidenceTypes Json? // list of expected evidence types
+  parent               ComplianceRequirement?  @relation("RequirementTree", fields: [parentId], references: [id])
+  children             ComplianceRequirement[] @relation("RequirementTree")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  evidenceLinks EvidenceLink[]
+
+  @@index([sectionCode])
+  @@map("compliance_requirements")
+}
+
+// ---------------------------------------------------------------------------
+// Evidence (polymorphic linking via entityType + entityId)
+// ---------------------------------------------------------------------------
+
+model Evidence {
+  id                 String             @id @default(cuid())
+  title              String
+  fileName           String?
+  fileType           String?
+  storagePath        String?
+  version            Int                @default(1)
+  uploadedById       String?
+  status             EvidenceStatus     @default(DRAFT)
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  checksum           String?
+  notes              String?
+  uploadedBy         User?              @relation(fields: [uploadedById], references: [id])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  archivedAt         DateTime?
+
+  links EvidenceLink[]
+
+  @@map("evidence")
+}
+
+/// Polymorphic mapping: one evidence item -> one target record (by type + id),
+/// optionally mapped to a compliance requirement. No DB FK on entityId
+/// (application-enforced); entityType is a whitelisted enum.
+model EvidenceLink {
+  id            String           @id @default(cuid())
+  evidenceId    String
+  entityType    LinkedEntityType
+  entityId      String
+  requirementId String?
+  evidence      Evidence         @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  requirement   ComplianceRequirement? @relation(fields: [requirementId], references: [id])
+  createdAt     DateTime         @default(now())
+
+  @@unique([evidenceId, entityType, entityId])
+  @@index([entityType, entityId])
+  @@map("evidence_links")
+}
+
+// ---------------------------------------------------------------------------
+// Alerts, notifications & audit
+// ---------------------------------------------------------------------------
+
+model Alert {
+  id              String           @id @default(cuid())
+  type            AlertType
+  severity        AlertSeverity    @default(WARNING)
+  status          AlertStatus      @default(OPEN)
+  title           String
+  message         String?
+  entityType      LinkedEntityType?
+  entityId        String?
+  assignedToUserId String?
+  dueDate         DateTime?
+  resolvedAt      DateTime?
+  assignedTo      User?            @relation(fields: [assignedToUserId], references: [id])
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([status, severity])
+  @@index([entityType, entityId])
+  @@map("alerts")
 }
 
 model Notification {
   id        String           @id @default(cuid())
   userId    String
   title     String
-  message   String
+  message   String?
   type      NotificationType @default(INFO)
   read      Boolean          @default(false)
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime         @default(now())
 
+  @@index([userId, read])
   @@map("notifications")
 }
 
-model Comment {
-  id        String   @id @default(cuid())
-  projectId String
-  authorId  String
-  content   String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  author    User     @relation(fields: [authorId], references: [id])
-  createdAt DateTime @default(now())
+model AuditLog {
+  id          String            @id @default(cuid())
+  actorUserId String?
+  action      String // e.g. CREATE, UPDATE, ARCHIVE, STATUS_CHANGE, APPROVE, EXPORT
+  entityType  LinkedEntityType?
+  entityId    String?
+  summary     String?
+  metadata    Json?
+  actor       User?             @relation(fields: [actorUserId], references: [id])
+  createdAt   DateTime          @default(now())
 
-  @@map("comments")
-}
-
-model File {
-  id        String   @id @default(cuid())
-  projectId String
-  uploaderId String
-  name      String
-  url       String
-  size      Int
-  mimeType  String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  uploader  User     @relation(fields: [uploaderId], references: [id])
-  createdAt DateTime @default(now())
-
-  @@map("files")
-}
-
-model AIRecommendation {
-  id          String                 @id @default(cuid())
-  projectId   String
-  title       String
-  description String
-  priority    RecommendationPriority
-  category    RecommendationCategory
-  project     Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdAt   DateTime               @default(now())
-
-  @@map("ai_recommendations")
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@map("audit_logs")
 }
