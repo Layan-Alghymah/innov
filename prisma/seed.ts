@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
@@ -60,14 +61,29 @@ async function main() {
     create: { id: "dept-digital", organizationId: owner.id, nameAr: "إدارة التحول الرقمي" },
   });
 
-  // 4) System administrator user (local-dev credentials)
+  // 4) System administrator user.
+  //    Credentials come from env so we never ship a known password to a public
+  //    deploy. In production with no SEED_ADMIN_PASSWORD, a strong random one is
+  //    generated and printed once (save it). Locally it falls back to a dev value.
+  const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@innovation.local";
+  let adminPassword = process.env.SEED_ADMIN_PASSWORD;
+  let generatedPassword = false;
+  if (!adminPassword) {
+    if (process.env.NODE_ENV === "production") {
+      adminPassword = randomBytes(12).toString("base64url");
+      generatedPassword = true;
+    } else {
+      adminPassword = "Admin@12345";
+    }
+  }
+
   const adminRole = await prisma.role.findUniqueOrThrow({ where: { key: ROLE_KEYS.SYSTEM_ADMIN } });
-  const passwordHash = await bcrypt.hash("Admin@12345", 10);
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
   const admin = await prisma.user.upsert({
-    where: { email: "admin@innovation.local" },
+    where: { email: adminEmail },
     update: {},
     create: {
-      email: "admin@innovation.local",
+      email: adminEmail,
       name: "مدير النظام",
       passwordHash,
       status: "ACTIVE",
@@ -103,7 +119,12 @@ async function main() {
     });
   }
 
-  console.log("Seed complete. Admin login: admin@innovation.local / Admin@12345");
+  console.log(`Seed complete. Admin email: ${adminEmail}`);
+  if (generatedPassword) {
+    console.log(`Generated admin password (SAVE THIS NOW, shown once): ${adminPassword}`);
+  } else if (process.env.NODE_ENV !== "production") {
+    console.log(`Admin password (dev): ${adminPassword}`);
+  }
 }
 
 main()
