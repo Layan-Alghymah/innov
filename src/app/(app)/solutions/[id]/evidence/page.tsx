@@ -6,10 +6,10 @@ import { ArrowRight, Plus } from "lucide-react";
 import { requirePermission, getAccessContext, can } from "@/server/authz";
 import { isAuthorizationError } from "@/server/authorization";
 import { getSolutionById } from "@/modules/solutions/service";
-import { listSolutionEvidence, computeEvidenceReadiness, EvidenceError } from "@/modules/evidence/service";
+import { listSolutionEvidence, computeEvidenceApprovalRate, EvidenceError } from "@/modules/evidence/service";
 import { REVIEW_STATUS_LABELS } from "@/modules/evidence/schema";
 import { EvidenceTable } from "@/modules/evidence/components/evidence-table";
-import { EvidenceReadinessCard } from "@/modules/evidence/components/evidence-readiness-card";
+import { EvidenceApprovalRateCard } from "@/modules/evidence/components/evidence-approval-rate-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -54,7 +54,7 @@ export default async function SolutionEvidencePage({
     if (e instanceof EvidenceError && e.code === "NOT_FOUND") notFound();
     throw e;
   }
-  const readiness = await computeEvidenceReadiness(params.id);
+  const approvalRate = await computeEvidenceApprovalRate(params.id);
   const canUpload = can(ctx, "evidence.upload");
 
   const qs = (patch: Record<string, string | undefined>) => {
@@ -88,7 +88,7 @@ export default async function SolutionEvidencePage({
         </div>
       </div>
 
-      <EvidenceReadinessCard readiness={readiness} />
+      <EvidenceApprovalRateCard rate={approvalRate} />
 
       <Card>
         <CardContent className="flex flex-col gap-3 pt-5">

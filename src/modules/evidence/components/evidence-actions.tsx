@@ -121,7 +121,7 @@ export function EvidenceActionBar({
             evidenceId={evidenceId}
             solutionId={solutionId}
             variant="default"
-            confirmText="اعتماد هذا الدليل؟ سيُحتسب ضمن جاهزية الأدلة."
+            confirmText="اعتماد هذا الدليل؟ سيُحتسب ضمن نسبة اعتماد الأدلة المرفوعة."
           />
         )}
         {flags.canArchive && (

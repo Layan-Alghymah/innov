@@ -16,6 +16,7 @@ import { REVIEW_STATUS_LABELS, FILE_STATUS_LABELS } from "@/modules/evidence/sch
 import { EvidenceActionBar } from "@/modules/evidence/components/evidence-actions";
 import { EvidenceLinksPanel } from "@/modules/evidence/components/evidence-links-panel";
 import { EvidenceTimeline } from "@/modules/evidence/components/evidence-timeline";
+import { EvidenceFilePanel } from "@/modules/evidence/components/evidence-file-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -60,6 +61,9 @@ export default async function EvidenceDetailsPage({ params }: { params: { id: st
     ctx,
     { canUpload: can(ctx, "evidence.upload"), canApprove: can(ctx, "evidence.approve") },
   );
+
+  const canReplaceFile =
+    can(ctx, "evidence.upload") && evidence.reviewStatus !== "APPROVED" && evidence.reviewStatus !== "ARCHIVED";
 
   return (
     <div className="flex flex-col gap-5">
@@ -123,6 +127,10 @@ export default async function EvidenceDetailsPage({ params }: { params: { id: st
               <dt className="text-muted">تاريخ الرفع</dt>
               <dd className="font-medium text-slate-700 dark:text-slate-200">{new Date(evidence.createdAt).toLocaleString("ar")}</dd>
             </div>
+            <div className="flex justify-between border-b border-border/50 py-1 dark:border-border-dark/50">
+              <dt className="text-muted">الإصدار</dt>
+              <dd className="font-medium text-slate-700 dark:text-slate-200">{evidence.version}</dd>
+            </div>
             <div className="flex justify-between border-b border-border/50 py-1 sm:col-span-2 dark:border-border-dark/50">
               <dt className="text-muted">بصمة التحقق (SHA-256)</dt>
               <dd className="font-mono text-[11px] text-slate-700 dark:text-slate-200">{evidence.checksum ?? "—"}</dd>
@@ -130,6 +138,20 @@ export default async function EvidenceDetailsPage({ params }: { params: { id: st
           </dl>
         </CardContent>
       </Card>
+
+      <EvidenceFilePanel
+        evidenceId={evidence.id}
+        solutionId={params.id}
+        hasBinary={!!evidence.storagePath}
+        version={evidence.version}
+        canDownload
+        canReplace={canReplaceFile}
+        replaceBlockedReason={
+          evidence.reviewStatus === "APPROVED" || evidence.reviewStatus === "ARCHIVED"
+            ? "لا يمكن استبدال ملف دليل معتمد أو مؤرشف."
+            : undefined
+        }
+      />
 
       <EvidenceLinksPanel
         evidenceId={evidence.id}
