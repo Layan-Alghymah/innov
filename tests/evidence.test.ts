@@ -16,7 +16,7 @@ import {
   listSolutionEvidence,
   getEvidenceById,
   getEvidenceTimeline,
-  computeEvidenceReadiness,
+  computeEvidenceApprovalRate,
   validateFile,
   EvidenceError,
 } from "@/modules/evidence/service";
@@ -27,7 +27,9 @@ const DEPT_A = "dept-digital";
 const DEPT_B = "dept-strategy";
 const PDF = "application/pdf";
 
-const FILE = { fileName: "memo.pdf", mimeType: PDF, sizeBytes: 2048, checksum: "abc123" };
+const pdfBytes = (extra = "x") => Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.from(extra)]);
+const zipBytes = () => Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("docx-body")]);
+const FILE = { fileName: "memo.pdf", mimeType: PDF, bytes: pdfBytes() };
 
 let admin: AccessContext, editor: AccessContext, partner: AccessContext, viewer: AccessContext;
 let adminId = "", partnerId = "";
@@ -116,7 +118,7 @@ describe("upload", () => {
     expect(ev.fileProcessingStatus).toBe("UPLOADED");
     expect(ev.fileName).toBe("memo.pdf");
     expect(ev.mimeType).toBe(PDF);
-    expect(ev.sizeBytes).toBe(2048);
+    expect(ev.sizeBytes).toBe(FILE.bytes.length);
     expect(ev.notes).toBe("وصف"); // description → notes mapping
     expect(ev.uploadedById).toBe(editor.userId);
     const link = await prisma.evidenceLink.findFirst({ where: { evidenceId: id, entityType: "INNOVATION_SOLUTION" } });
@@ -132,7 +134,7 @@ describe("upload", () => {
 
   it("3. rejects a file over the size ceiling", async () => {
     await expectEvidenceErr(
-      () => uploadEvidence(editor, solA, { title: "ملف كبير" }, { ...FILE, sizeBytes: 30 * 1024 * 1024 }),
+      () => uploadEvidence(editor, solA, { title: "ملف كبير" }, { ...FILE, bytes: Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(30 * 1024 * 1024)]) }),
       "FILE_TOO_LARGE",
     );
   });
@@ -143,10 +145,18 @@ describe("upload", () => {
 
   it("5. accepts DOCX and XLSX", () => {
     expect(() =>
-      validateFile({ ...FILE, mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
+      validateFile({
+        fileName: "a.docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        bytes: zipBytes(),
+      }),
     ).not.toThrow();
     expect(() =>
-      validateFile({ ...FILE, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      validateFile({
+        fileName: "a.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        bytes: zipBytes(),
+      }),
     ).not.toThrow();
   });
 });
@@ -332,16 +342,16 @@ describe("linking", () => {
 describe("evidence readiness (evidence only)", () => {
   it("30. readiness is approved ÷ tracked, and is stored on the solution", async () => {
     const sol = await makeSolution(DEPT_A);
-    expect((await computeEvidenceReadiness(sol)).percentage).toBe(0);
+    expect((await computeEvidenceApprovalRate(sol)).percentage).toBe(0);
 
     const a = await evidenceUnderReview(sol);
     await approveEvidence(admin, a);
     await uploadEvidence(admin, sol, { title: "قيد الإعداد" }, FILE); // tracked, not approved
 
-    const readiness = await computeEvidenceReadiness(sol);
-    expect(readiness.approved).toBe(1);
-    expect(readiness.expected).toBe(2);
-    expect(readiness.percentage).toBe(50);
+    const rate = await computeEvidenceApprovalRate(sol);
+    expect(rate.approved).toBe(1);
+    expect(rate.tracked).toBe(2);
+    expect(rate.percentage).toBe(50);
 
     const stored = await prisma.innovationSolution.findUniqueOrThrow({ where: { id: sol } });
     expect(stored.evidenceReadinessPct).toBe(50);
@@ -354,10 +364,10 @@ describe("evidence readiness (evidence only)", () => {
     const rejected = await evidenceUnderReview(sol);
     await rejectEvidence(admin, rejected, "سبب");
 
-    const readiness = await computeEvidenceReadiness(sol);
-    expect(readiness.approved).toBe(1);
-    expect(readiness.expected).toBe(1);
-    expect(readiness.percentage).toBe(100);
+    const rate = await computeEvidenceApprovalRate(sol);
+    expect(rate.approved).toBe(1);
+    expect(rate.tracked).toBe(1);
+    expect(rate.percentage).toBe(100);
   });
 });
 
