@@ -13,7 +13,15 @@ import {
 } from "@/server/authorization";
 import { solutionSchema } from "./schema";
 
-export type SolutionErrorCode = "VALIDATION" | "NOT_DRAFT" | "INVALID_STATE" | "BAD_REFERENCE";
+export type SolutionErrorCode =
+  | "VALIDATION"
+  | "NOT_DRAFT"
+  | "INVALID_STATE"
+  | "BAD_REFERENCE"
+  | "INVALID_TRANSITION"
+  | "PUBLISH_INCOMPLETE"
+  | "REASON_REQUIRED"
+  | "DUPLICATE";
 export class SolutionError extends Error {
   code: SolutionErrorCode;
   fieldErrors?: Record<string, string[]>;
@@ -191,7 +199,8 @@ export async function updateDraftSolution(actor: AccessContext, solutionId: stri
 }
 
 /** Columns an External Partner may ever write (still gated by the share allow-list). */
-const PARTNER_UPDATABLE = new Set(["notes", "description", "technologies", "targetBeneficiaries", "risks"]);
+export const PARTNER_UPDATABLE_FIELDS = ["notes", "description", "technologies", "targetBeneficiaries", "risks"] as const;
+const PARTNER_UPDATABLE = new Set<string>(PARTNER_UPDATABLE_FIELDS);
 
 /**
  * Partner write path: gated by an ACTIVE ResourceShare whose allowedActions
@@ -242,7 +251,9 @@ export async function archiveSolution(actor: AccessContext, solutionId: string):
   await prisma.$transaction(async (tx) => {
     await tx.innovationSolution.update({
       where: { id: solutionId },
-      data: { status: "ARCHIVED", archivedAt: new Date(), archivedById: actor.userId },
+      // Archiving also withdraws publication, so an archived record can never
+      // linger in the Viewer (PUBLISHED) scope.
+      data: { status: "ARCHIVED", archivedAt: new Date(), archivedById: actor.userId, publishedAt: null },
     });
     await writeAudit(
       {
