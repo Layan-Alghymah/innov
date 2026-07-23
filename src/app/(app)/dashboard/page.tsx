@@ -6,11 +6,19 @@ import { ReadinessGrid } from "@/modules/dashboard/components/readiness-grid";
 import { MaturityBreakdown } from "@/modules/dashboard/components/maturity-breakdown";
 import { overallReadinessPct } from "@/modules/dashboard/mock";
 import { AlertItem } from "@/modules/alerts/components/alert-item";
-import { solutionsMock } from "@/modules/solutions/mock";
 import { alertsMock, urgentAlertsCount } from "@/modules/alerts/mock";
+import { getAccessContext, can } from "@/server/authz";
+import { getSolutionStats } from "@/modules/solutions/stats-service";
+import type { SolutionStats } from "@/modules/solutions/stats-service";
 
-export default function DashboardPage() {
+const EMPTY_STATS: SolutionStats = { total: 0, byMaturity: [], byImplementation: [], completeness: [] };
+
+export default async function DashboardPage() {
   const reminderCount = alertsMock.length - urgentAlertsCount;
+  // Real, scope-filtered solution aggregates (no mock). Nothing is fetched
+  // without solution.view.
+  const ctx = await getAccessContext();
+  const stats = ctx && can(ctx, "solution.view") ? await getSolutionStats(ctx) : EMPTY_STATS;
 
   return (
     <div className="flex flex-col gap-5">
@@ -24,8 +32,8 @@ export default function DashboardPage() {
         />
         <StatTile
           label="الحلول الابتكارية المسجّلة"
-          value={String(solutionsMock.length)}
-          sub="عدّة حلول من هاكاثون المعسكر"
+          value={String(stats.total)}
+          sub="ضمن نطاق صلاحياتك"
           href="/solutions"
         />
         <StatTile label="الفعاليات الابتكارية هذا العام" value="9" sub="تجاوزت الحد الأدنى (3)" href="/activities" />
@@ -41,7 +49,7 @@ export default function DashboardPage() {
       <ReadinessGrid />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <MaturityBreakdown solutions={solutionsMock} />
+        <MaturityBreakdown stats={stats} />
         <Card>
           <CardHeader>
             <CardTitle>أحدث التنبيهات الزمنية</CardTitle>

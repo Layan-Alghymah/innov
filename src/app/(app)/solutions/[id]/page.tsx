@@ -5,7 +5,14 @@ import { ArrowRight } from "lucide-react";
 
 import { requirePermission, getAccessContext, can } from "@/server/authz";
 import { isAuthorizationError, findActiveShareForEntity } from "@/server/authorization";
+import { prisma } from "@/server/db";
 import { getSolutionById, computeSolutionCompleteness } from "@/modules/solutions/service";
+import { computeLifecycleFlags } from "@/modules/solutions/lifecycle-service";
+import { listSolutionShares, listParticipatingOrganizations } from "@/modules/solutions/sharing-service";
+import { getSolutionHistory } from "@/modules/solutions/history-service";
+import { LifecyclePanel } from "@/modules/solutions/components/lifecycle-panel";
+import { SharingPanel, OrganizationsPanel } from "@/modules/solutions/components/sharing-panel";
+import { HistoryTimeline } from "@/modules/solutions/components/history-timeline";
 import {
   MATURITY_LABELS,
   IMPLEMENTATION_LABELS,
@@ -45,6 +52,30 @@ export default async function SolutionDetailsPage({ params }: { params: { id: st
   const canArchive = can(ctx, "solution.archive") && solution.status !== "ARCHIVED";
   // Partners edit only through an active share's allowedFields.
   const share = await findActiveShareForEntity(ctx.userId, "INNOVATION_SOLUTION", solution.id);
+
+  const canManage = can(ctx, "solution.update");
+  const lifecycleFlags = computeLifecycleFlags(solution, canManage);
+  const [orgs, history, shares, allOrgs, partnerUsers] = await Promise.all([
+    listParticipatingOrganizations(ctx, solution.id),
+    getSolutionHistory(ctx, solution.id),
+    canManage ? listSolutionShares(ctx, solution.id) : Promise.resolve([]),
+    canManage
+      ? prisma.organization.findMany({ where: { type: { not: "OWNER" } }, orderBy: { nameAr: "asc" }, select: { id: true, nameAr: true } })
+      : Promise.resolve([]),
+    canManage
+      ? prisma.user.findMany({
+          where: {
+            status: "ACTIVE",
+            registrationStatus: "APPROVED",
+            roleAssignments: { some: { role: { key: "EXTERNAL_PARTNER" } } },
+          },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true, email: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const linkedOrgIds = new Set(orgs.map((o) => o.id));
+  const availableOrgs = allOrgs.filter((o) => !linkedOrgIds.has(o.id)).map((o) => ({ id: o.id, label: o.nameAr }));
 
   return (
     <div className="flex flex-col gap-5">
@@ -139,10 +170,28 @@ export default async function SolutionDetailsPage({ params }: { params: { id: st
               }}
             />
           )}
+
+          <OrganizationsPanel
+            solutionId={solution.id}
+            organizations={orgs}
+            available={availableOrgs}
+            canManage={canManage}
+          />
+
+          {canManage && (
+            <SharingPanel
+              solutionId={solution.id}
+              shares={shares}
+              partners={partnerUsers.map((u) => ({ id: u.id, label: `${u.name} — ${u.email}` }))}
+            />
+          )}
+
+          <HistoryTimeline events={history} />
         </div>
 
         <div className="flex flex-col gap-5">
           <CompletenessPanel completeness={completeness} />
+          <LifecyclePanel solutionId={solution.id} flags={lifecycleFlags} />
         </div>
       </div>
     </div>
