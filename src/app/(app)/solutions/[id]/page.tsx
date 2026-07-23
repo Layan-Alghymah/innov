@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, FolderCheck } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 
 import { requirePermission, getAccessContext, can } from "@/server/authz";
 import { isAuthorizationError, findActiveShareForEntity } from "@/server/authorization";
@@ -48,6 +50,7 @@ export default async function SolutionDetailsPage({ params }: { params: { id: st
   }
 
   const completeness = computeSolutionCompleteness(solution as unknown as Record<string, unknown>);
+  const canViewEvidence = can(ctx, "evidence.view");
   const canEdit = can(ctx, "solution.update") && solution.status === "DRAFT";
   const canArchive = can(ctx, "solution.archive") && solution.status !== "ARCHIVED";
   // Partners edit only through an active share's allowedFields.
@@ -93,7 +96,17 @@ export default async function SolutionDetailsPage({ params }: { params: { id: st
         </div>
       </div>
 
-      <SolutionActionBar solutionId={solution.id} canEdit={canEdit} canArchive={canArchive} />
+      <div className="flex flex-wrap items-center gap-2">
+        <SolutionActionBar solutionId={solution.id} canEdit={canEdit} canArchive={canArchive} />
+        {canViewEvidence && (
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/solutions/${solution.id}/evidence`}>
+              <FolderCheck className="h-4 w-4" />
+              أدلة الحل
+            </Link>
+          </Button>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="flex flex-col gap-5 lg:col-span-2">
