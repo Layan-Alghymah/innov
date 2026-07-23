@@ -1,6 +1,16 @@
+import { createHash } from "crypto";
+
 import type { EvidenceReviewStatus, LinkedEntityType, Prisma } from "@prisma/client";
 
 import { prisma } from "@/server/db";
+import {
+  getStorage,
+  buildEvidenceKey,
+  maxFileBytes,
+  signedUrlTtlSeconds,
+  signedUrlsEnabled,
+  StorageError,
+} from "@/server/storage";
 import { writeAudit, AUDIT } from "@/server/audit";
 import type { AccessContext } from "@/server/access-context";
 import {
@@ -14,7 +24,6 @@ import {
   evidenceMetadataSchema,
   evidenceLinkSchema,
   ALLOWED_MIME_TYPES,
-  MAX_FILE_BYTES,
   type EvidenceMetadataInput,
 } from "./schema";
 
@@ -25,13 +34,15 @@ export type EvidenceErrorCode =
   | "FILE_TOO_LARGE"
   | "DUPLICATE"
   | "BAD_REFERENCE"
-  | "NOT_FOUND";
+  | "NOT_FOUND"
+  | "STORAGE_FAILED"
+  | "NO_BINARY";
 
 export class EvidenceError extends Error {
   code: EvidenceErrorCode;
   fieldErrors?: Record<string, string[]>;
-  constructor(code: EvidenceErrorCode, message?: string, fieldErrors?: Record<string, string[]>) {
-    super(message ?? code);
+  constructor(code: EvidenceErrorCode, message?: string, fieldErrors?: Record<string, string[]>, cause?: unknown) {
+    super(message ?? code, cause === undefined ? undefined : { cause });
     this.name = "EvidenceError";
     this.code = code;
     this.fieldErrors = fieldErrors;
@@ -117,37 +128,52 @@ async function solutionIdForEvidence(evidenceId: string): Promise<string> {
 
 // ── Evidence readiness ─────────────────────────────────────────────────────
 
-export interface EvidenceReadiness {
+export interface EvidenceApprovalRate {
   percentage: number;
   approved: number;
-  expected: number;
+  /** Uploaded-and-tracked evidence — NOT a set of required evidence. */
+  tracked: number;
 }
 
 /**
- * EVIDENCE READINESS ONLY — approved evidence ÷ tracked (expected) evidence.
- * Tracked = evidence attached to the solution that is neither ARCHIVED nor
- * REJECTED. This is NOT compliance readiness, DGA readiness, or an estimated
- * readiness score; it says nothing about requirements being met.
+ * APPROVAL RATE OF UPLOADED EVIDENCE — "نسبة اعتماد الأدلة المرفوعة".
+ *
+ *   numerator   = evidence linked to the solution with reviewStatus = APPROVED
+ *   denominator = evidence linked to the solution, EXCLUDING REJECTED and ARCHIVED
+ *
+ * What it is NOT:
+ *  - NOT compliance readiness / DGA readiness / an estimated readiness score.
+ *  - NOT evidence-requirement coverage: the denominator counts only what was
+ *    actually uploaded, so required-but-missing evidence is invisible to it.
+ *    A solution with one approved file scores 100% even if ten required
+ *    documents were never uploaded. Requirement-coverage scoring is future work.
  */
-export async function computeEvidenceReadiness(solutionId: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<EvidenceReadiness> {
+export async function computeEvidenceApprovalRate(solutionId: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<EvidenceApprovalRate> {
   const links = await db.evidenceLink.findMany({
     where: { entityType: "INNOVATION_SOLUTION", entityId: solutionId },
     select: { evidenceId: true },
   });
   const ids = links.map((l) => l.evidenceId);
-  if (ids.length === 0) return { percentage: 0, approved: 0, expected: 0 };
+  if (ids.length === 0) return { percentage: 0, approved: 0, tracked: 0 };
 
-  const [expected, approved] = await Promise.all([
+  const [tracked, approved] = await Promise.all([
     db.evidence.count({ where: { id: { in: ids }, reviewStatus: { notIn: ["ARCHIVED", "REJECTED"] } } }),
     db.evidence.count({ where: { id: { in: ids }, reviewStatus: "APPROVED" } }),
   ]);
-  return { percentage: expected > 0 ? Math.round((approved / expected) * 100) : 0, approved, expected };
+  return { percentage: tracked > 0 ? Math.round((approved / tracked) * 100) : 0, approved, tracked };
 }
 
+/**
+ * Persist the approval rate. NOTE: the column is still named
+ * `evidenceReadinessPct` (created in Phase 2A); the stored value is the
+ * approval rate defined above. The column was intentionally not renamed to
+ * avoid a cross-module migration — the semantics are documented here and in
+ * docs/architecture/phase-5a1-evidence-storage.md.
+ */
 async function recomputeAndStoreReadiness(db: Prisma.TransactionClient, solutionId: string) {
-  const readiness = await computeEvidenceReadiness(solutionId, db);
-  await db.innovationSolution.update({ where: { id: solutionId }, data: { evidenceReadinessPct: readiness.percentage } });
-  return readiness;
+  const rate = await computeEvidenceApprovalRate(solutionId, db);
+  await db.innovationSolution.update({ where: { id: solutionId }, data: { evidenceReadinessPct: rate.percentage } });
+  return rate;
 }
 
 // ── Registry ───────────────────────────────────────────────────────────────
@@ -217,24 +243,60 @@ export async function getEvidenceById(actor: AccessContext, evidenceId: string) 
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
-export interface UploadedFileDescriptor {
+/** The actual uploaded bytes plus the client-declared name/type. */
+export interface EvidenceFileInput {
+  fileName: string;
+  mimeType: string;
+  bytes: Buffer;
+}
+
+/** Magic-byte signatures — guards against a mislabelled content type. */
+function magicMatches(mimeType: string, bytes: Buffer): boolean {
+  if (bytes.length < 4) return false;
+  if (mimeType === "application/pdf") return bytes.subarray(0, 5).toString("latin1") === "%PDF-";
+  // DOCX/XLSX are ZIP containers.
+  return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+}
+
+export interface ValidatedFile {
   fileName: string;
   mimeType: string;
   sizeBytes: number;
-  checksum?: string | null;
+  checksum: string;
+  bytes: Buffer;
 }
 
-/** Validate the file against the supported types and the size ceiling. */
-export function validateFile(file: UploadedFileDescriptor) {
-  if (!ALLOWED_MIME_TYPES[file.mimeType]) {
+/**
+ * Validate type, extension/content agreement, emptiness and the configurable
+ * size ceiling, then derive the true size and SHA-256 checksum from the bytes
+ * (client-declared values are never trusted).
+ */
+export function validateFile(file: EvidenceFileInput): ValidatedFile {
+  const allowed = ALLOWED_MIME_TYPES[file.mimeType];
+  if (!allowed) {
     throw new EvidenceError("UNSUPPORTED_FILE", "نوع الملف غير مدعوم. المسموح: PDF أو DOCX أو XLSX");
   }
-  if (!Number.isFinite(file.sizeBytes) || file.sizeBytes <= 0) {
-    throw new EvidenceError("VALIDATION", "حجم الملف غير صالح");
+  if (!file.bytes || file.bytes.length === 0) {
+    throw new EvidenceError("VALIDATION", "الملف فارغ");
   }
-  if (file.sizeBytes > MAX_FILE_BYTES) {
-    throw new EvidenceError("FILE_TOO_LARGE", "حجم الملف يتجاوز الحد المسموح (25 ميغابايت)");
+  const ext = file.fileName.split(".").pop()?.toLowerCase() ?? "";
+  if (ext !== allowed.ext) {
+    throw new EvidenceError("UNSUPPORTED_FILE", "امتداد الملف لا يطابق نوعه");
   }
+  if (!magicMatches(file.mimeType, file.bytes)) {
+    throw new EvidenceError("UNSUPPORTED_FILE", "محتوى الملف لا يطابق النوع المُعلن");
+  }
+  const limit = maxFileBytes();
+  if (file.bytes.length > limit) {
+    throw new EvidenceError("FILE_TOO_LARGE", `حجم الملف يتجاوز الحد المسموح (${Math.round(limit / (1024 * 1024))} ميغابايت)`);
+  }
+  return {
+    fileName: file.fileName,
+    mimeType: file.mimeType,
+    sizeBytes: file.bytes.length,
+    checksum: createHash("sha256").update(file.bytes).digest("hex"),
+    bytes: file.bytes,
+  };
 }
 
 /**
@@ -246,49 +308,85 @@ export async function uploadEvidence(
   actor: AccessContext,
   solutionId: string,
   raw: unknown,
-  file: UploadedFileDescriptor,
+  file: EvidenceFileInput,
 ): Promise<{ id: string }> {
   const { solution } = await requireEvidenceUpload(actor, solutionId);
   const parsed = evidenceMetadataSchema.safeParse(raw);
   if (!parsed.success) throw new EvidenceError("VALIDATION", "invalid", parsed.error.flatten().fieldErrors);
-  validateFile(file);
+  const validated = validateFile(file);
   const meta: EvidenceMetadataInput = parsed.data;
 
-  return prisma.$transaction(async (tx) => {
-    const created = await tx.evidence.create({
-      data: {
-        title: meta.title,
-        notes: meta.description, // Evidence has no `description` column — mapped to notes
-        classification: meta.classification,
-        fileName: file.fileName,
-        mimeType: file.mimeType,
-        sizeBytes: file.sizeBytes,
-        checksum: file.checksum ?? null,
-        uploadedById: actor.userId,
-        reviewStatus: "DRAFT",
-        fileProcessingStatus: "UPLOADED",
-      },
-      select: { id: true },
+  // Consistency strategy: put the binary first, then persist metadata. If the
+  // DB write fails we compensate by deleting the just-written object, so a
+  // storage object never outlives a missing DB row (and no row ever points at
+  // a missing object).
+  const key = buildEvidenceKey({ solutionId, version: 1, fileName: validated.fileName });
+  const storage = await getStorage();
+  try {
+    await storage.put(key, validated.bytes, {
+      contentType: validated.mimeType,
+      checksum: validated.checksum,
+      fileName: validated.fileName,
     });
-    await tx.evidenceLink.create({
-      data: { evidenceId: created.id, entityType: "INNOVATION_SOLUTION", entityId: solutionId },
+  } catch (e) {
+    throw new EvidenceError("STORAGE_FAILED", "تعذّر تخزين الملف. لم يتم إنشاء أي سجل.", undefined, e);
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const created = await tx.evidence.create({
+        data: {
+          title: meta.title,
+          notes: meta.description, // Evidence has no `description` column — mapped to notes
+          classification: meta.classification,
+          fileName: validated.fileName,
+          mimeType: validated.mimeType,
+          sizeBytes: validated.sizeBytes,
+          checksum: validated.checksum,
+          storagePath: key,
+          version: 1,
+          uploadedById: actor.userId,
+          reviewStatus: "DRAFT",
+          fileProcessingStatus: "UPLOADED",
+        },
+        select: { id: true },
+      });
+      await tx.evidenceLink.create({
+        data: { evidenceId: created.id, entityType: "INNOVATION_SOLUTION", entityId: solutionId },
+      });
+      await writeAudit(
+        {
+          actorUserId: actor.userId,
+          action: AUDIT.EVIDENCE_UPLOADED,
+          entityType: "EVIDENCE",
+          entityId: created.id,
+          departmentId: solution.owningDepartmentId,
+          summary: "رفع دليل جديد",
+          // Never log the storage key or any credential.
+          metadata: {
+            solutionId,
+            fileName: validated.fileName,
+            mimeType: validated.mimeType,
+            sizeBytes: validated.sizeBytes,
+            checksum: validated.checksum,
+            version: 1,
+          },
+          after: { reviewStatus: "DRAFT", fileProcessingStatus: "UPLOADED" },
+        },
+        tx,
+      );
+      await recomputeAndStoreReadiness(tx, solutionId);
+      return created;
     });
-    await writeAudit(
-      {
-        actorUserId: actor.userId,
-        action: AUDIT.EVIDENCE_UPLOADED,
-        entityType: "EVIDENCE",
-        entityId: created.id,
-        departmentId: solution.owningDepartmentId,
-        summary: "رفع دليل جديد",
-        metadata: { solutionId, fileName: file.fileName, mimeType: file.mimeType, sizeBytes: file.sizeBytes },
-        after: { reviewStatus: "DRAFT", fileProcessingStatus: "UPLOADED" },
-      },
-      tx,
-    );
-    await recomputeAndStoreReadiness(tx, solutionId);
-    return created;
-  });
+  } catch (dbError) {
+    // Compensating cleanup — best effort; never mask the original failure.
+    try {
+      await storage.delete(key);
+    } catch {
+      /* orphan object; retention job will reclaim it */
+    }
+    throw dbError;
+  }
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -394,6 +492,185 @@ export async function archiveEvidence(actor: AccessContext, evidenceId: string) 
     summary: "أرشفة الدليل",
     extra: { archivedAt: new Date(), archivedById: actor.userId },
   });
+}
+
+// ── Secure download ────────────────────────────────────────────────────────
+
+export type DownloadPlan =
+  | { mode: "redirect"; url: string; fileName: string; mimeType: string }
+  | { mode: "stream"; body: Buffer; fileName: string; mimeType: string };
+
+/**
+ * Authorize, then produce a download plan. Authorization ALWAYS runs before any
+ * URL is minted or byte is read, so knowing a storage key grants nothing — keys
+ * are never accepted as input and never returned to clients.
+ *
+ * Partners additionally need an active share allowing `evidence.read`; viewers
+ * (published-only) may fetch APPROVED evidence exclusively.
+ */
+export async function prepareEvidenceDownload(actor: AccessContext, evidenceId: string): Promise<DownloadPlan> {
+  const solutionId = await solutionIdForEvidence(evidenceId);
+  requirePermission(actor, VIEW);
+  await requireScope(actor, "INNOVATION_SOLUTION", solutionId);
+  const solution = await loadSolutionCtx(solutionId);
+  const mode = await resolveAccessMode(actor, solution);
+
+  if (mode === "PARTNER") {
+    await requireShareAction(actor, "INNOVATION_SOLUTION", solution.id, "evidence.read");
+  }
+
+  const evidence = await prisma.evidence.findUnique({
+    where: { id: evidenceId },
+    select: { id: true, fileName: true, mimeType: true, storagePath: true, reviewStatus: true },
+  });
+  if (!evidence) throw new EvidenceError("NOT_FOUND", "الدليل غير موجود");
+  if (mode === "PUBLISHED" && evidence.reviewStatus !== "APPROVED") {
+    throw new EvidenceError("NOT_FOUND", "الدليل غير متاح");
+  }
+  if (!evidence.storagePath) throw new EvidenceError("NO_BINARY", "لا يوجد ملف مخزّن لهذا الدليل");
+
+  const fileName = evidence.fileName ?? "evidence";
+  const mimeType = evidence.mimeType ?? "application/octet-stream";
+  const storage = await getStorage();
+
+  await writeAudit({
+    actorUserId: actor.userId,
+    action: AUDIT.EVIDENCE_DOWNLOADED,
+    entityType: "EVIDENCE",
+    entityId: evidenceId,
+    departmentId: solution.owningDepartmentId,
+    summary: "تنزيل ملف الدليل",
+    metadata: { solutionId, accessMode: mode, fileName },
+  });
+
+  if (signedUrlsEnabled() && storage.supportsSignedUrls) {
+    const url = await storage.getSignedUrl(evidence.storagePath, {
+      expiresInSeconds: signedUrlTtlSeconds(),
+      fileName,
+    });
+    if (url) return { mode: "redirect", url, fileName, mimeType };
+  }
+
+  try {
+    const object = await storage.get(evidence.storagePath);
+    return { mode: "stream", body: object.body, fileName, mimeType };
+  } catch (e) {
+    if (e instanceof StorageError && e.code === "NOT_FOUND") {
+      throw new EvidenceError("NO_BINARY", "الملف غير موجود في وحدة التخزين");
+    }
+    throw new EvidenceError("STORAGE_FAILED", "تعذّر جلب الملف", undefined, e);
+  }
+}
+
+/** Record a denied download attempt (actor + evidence + reason only). */
+export async function auditDownloadDenied(actorUserId: string | null, evidenceId: string, reason: string) {
+  await writeAudit({
+    actorUserId,
+    action: AUDIT.EVIDENCE_DOWNLOAD_DENIED,
+    entityType: "EVIDENCE",
+    entityId: evidenceId,
+    summary: "محاولة تنزيل مرفوضة",
+    metadata: { reason },
+  });
+}
+
+// ── Version-safe replacement ───────────────────────────────────────────────
+
+/**
+ * Replace the binary with a NEW object under a new key and bump `version`.
+ * The previous object is retained (never overwritten), and the previous
+ * file metadata + checksum are preserved in the append-only audit trail.
+ * APPROVED/ARCHIVED evidence can never be replaced silently.
+ */
+export async function replaceEvidenceFile(
+  actor: AccessContext,
+  evidenceId: string,
+  file: EvidenceFileInput,
+): Promise<{ version: number }> {
+  const solutionId = await solutionIdForEvidence(evidenceId);
+  requirePermission(actor, UPLOAD);
+  await requireScope(actor, "INNOVATION_SOLUTION", solutionId);
+  const solution = await loadSolutionCtx(solutionId);
+
+  // Replacement is an internal custodial action — partners cannot re-file.
+  const mode = await resolveAccessMode(actor, solution);
+  if (mode !== "INTERNAL") throw new EvidenceError("INVALID_TRANSITION", "استبدال الملف من صلاحية الفريق الداخلي");
+
+  const current = await prisma.evidence.findUnique({
+    where: { id: evidenceId },
+    select: { id: true, version: true, reviewStatus: true, storagePath: true, fileName: true, mimeType: true, sizeBytes: true, checksum: true },
+  });
+  if (!current) throw new EvidenceError("NOT_FOUND", "الدليل غير موجود");
+  if (current.reviewStatus === "APPROVED" || current.reviewStatus === "ARCHIVED") {
+    throw new EvidenceError("INVALID_TRANSITION", "لا يمكن استبدال ملف دليل معتمد أو مؤرشف");
+  }
+
+  const validated = validateFile(file);
+  const nextVersion = current.version + 1;
+  const key = buildEvidenceKey({ solutionId, version: nextVersion, fileName: validated.fileName });
+  const storage = await getStorage();
+  try {
+    await storage.put(key, validated.bytes, {
+      contentType: validated.mimeType,
+      checksum: validated.checksum,
+      fileName: validated.fileName,
+    });
+  } catch (e) {
+    throw new EvidenceError("STORAGE_FAILED", "تعذّر تخزين الملف الجديد. لم يتغيّر الدليل.", undefined, e);
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.evidence.update({
+        where: { id: evidenceId },
+        data: {
+          fileName: validated.fileName,
+          mimeType: validated.mimeType,
+          sizeBytes: validated.sizeBytes,
+          checksum: validated.checksum,
+          storagePath: key,
+          version: nextVersion,
+          fileProcessingStatus: "UPLOADED", // a new binary must be re-processed
+        },
+      });
+      await writeAudit(
+        {
+          actorUserId: actor.userId,
+          action: AUDIT.EVIDENCE_FILE_REPLACED,
+          entityType: "EVIDENCE",
+          entityId: evidenceId,
+          departmentId: solution.owningDepartmentId,
+          summary: "استبدال ملف الدليل",
+          // Full metadata history (previous → new) lives in the audit trail.
+          before: {
+            version: current.version,
+            fileName: current.fileName,
+            mimeType: current.mimeType,
+            sizeBytes: current.sizeBytes,
+            checksum: current.checksum,
+          },
+          after: {
+            version: nextVersion,
+            fileName: validated.fileName,
+            mimeType: validated.mimeType,
+            sizeBytes: validated.sizeBytes,
+            checksum: validated.checksum,
+          },
+          metadata: { solutionId },
+        },
+        tx,
+      );
+    });
+  } catch (dbError) {
+    try {
+      await storage.delete(key); // roll back the new object; the original stays intact
+    } catch {
+      /* orphan object; retention job will reclaim it */
+    }
+    throw dbError;
+  }
+
+  return { version: nextVersion };
 }
 
 // ── Linking ────────────────────────────────────────────────────────────────

@@ -8,8 +8,8 @@ export const ALLOWED_MIME_TYPES: Record<string, { ext: string; label: string }> 
 };
 export const ALLOWED_EXTENSIONS = ["pdf", "docx", "xlsx"] as const;
 
-/** Per-file size ceiling (mvp-scope.md §6 assumption: ≤ 25 MB). */
-export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+/* Per-file size ceiling is configurable via EVIDENCE_MAX_FILE_MB — see
+   maxFileBytes() in @/server/storage (default 25 MB). */
 
 /** Entity types evidence may be linked to (subset of the LinkedEntityType whitelist). */
 export const LINKABLE_ENTITY_TYPES = [

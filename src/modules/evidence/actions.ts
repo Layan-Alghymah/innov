@@ -1,13 +1,14 @@
 "use server";
 
-import { createHash } from "crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getAccessContext } from "@/server/authz";
 import { isAuthorizationError } from "@/server/authorization";
+import { maxFileBytes } from "@/server/storage";
 import {
   uploadEvidence,
+  replaceEvidenceFile,
   submitEvidence,
   startEvidenceReview,
   approveEvidence,
@@ -17,7 +18,6 @@ import {
   unlinkEvidence,
   EvidenceError,
 } from "./service";
-import { MAX_FILE_BYTES } from "./schema";
 
 export interface EvidenceFormState {
   error?: string;
@@ -38,6 +38,8 @@ const MSG: Record<string, string> = {
   INVALID_TRANSITION: "لا يمكن تنفيذ هذا الإجراء على حالة الدليل الحالية",
   UNSUPPORTED_FILE: "نوع الملف غير مدعوم (المسموح: PDF، DOCX، XLSX)",
   FILE_TOO_LARGE: "حجم الملف يتجاوز الحد المسموح",
+  STORAGE_FAILED: "تعذّر تخزين الملف. حاول مرة أخرى.",
+  NO_BINARY: "لا يوجد ملف مخزّن لهذا الدليل",
   DUPLICATE: "الربط موجود بالفعل",
   BAD_REFERENCE: "السجل المستهدف غير صالح",
 };
@@ -61,27 +63,30 @@ function revalidate(solutionId: string, evidenceId?: string) {
   revalidatePath(`/solutions/${solutionId}`);
 }
 
+/** Read the posted file into memory, enforcing the configured ceiling first. */
+async function readPostedFile(fd: FormData): Promise<{ fileName: string; mimeType: string; bytes: Buffer } | { error: string }> {
+  const file = fd.get("file");
+  if (!(file instanceof File) || file.size === 0) return { error: "يرجى اختيار ملف غير فارغ" };
+  if (file.size > maxFileBytes()) return { error: MSG.FILE_TOO_LARGE };
+  try {
+    return { fileName: file.name, mimeType: file.type, bytes: Buffer.from(await file.arrayBuffer()) };
+  } catch {
+    return { error: "تعذّر قراءة الملف" };
+  }
+}
+
 /**
- * Upload: the real file is read server-side to derive its true size and a
- * SHA-256 checksum (never trusting client-declared values). Binary retention is
- * not implemented — see the Phase 5A limitations.
+ * Upload: the binary is persisted to object storage and its true size and
+ * SHA-256 checksum are derived server-side from the bytes (client-declared
+ * values are never trusted).
  */
 export async function uploadEvidenceAction(_p: EvidenceFormState, fd: FormData): Promise<EvidenceFormState> {
   const ctx = await getAccessContext();
   if (!ctx) return { error: "غير مصرّح" };
   const solutionId = String(fd.get("solutionId") ?? "");
 
-  const file = fd.get("file");
-  if (!(file instanceof File) || file.size === 0) return { error: "يرجى اختيار ملف" };
-  if (file.size > MAX_FILE_BYTES) return { error: MSG.FILE_TOO_LARGE };
-
-  let checksum: string;
-  try {
-    const bytes = Buffer.from(await file.arrayBuffer());
-    checksum = createHash("sha256").update(bytes).digest("hex");
-  } catch {
-    return { error: "تعذّر قراءة الملف" };
-  }
+  const posted = await readPostedFile(fd);
+  if ("error" in posted) return { error: posted.error };
 
   let created: { id: string };
   try {
@@ -93,13 +98,32 @@ export async function uploadEvidenceAction(_p: EvidenceFormState, fd: FormData):
         description: fd.get("description"),
         classification: fd.get("classification"),
       },
-      { fileName: file.name, mimeType: file.type, sizeBytes: file.size, checksum },
+      posted,
     );
   } catch (e) {
     return toFormState(e);
   }
   revalidate(solutionId, created.id);
   redirect(`/solutions/${solutionId}/evidence/${created.id}`);
+}
+
+/** Replace the binary with a new version (never overwrites the stored object). */
+export async function replaceEvidenceFileAction(_p: EvidenceFormState, fd: FormData): Promise<EvidenceFormState> {
+  const ctx = await getAccessContext();
+  if (!ctx) return { error: "غير مصرّح" };
+  const solutionId = String(fd.get("solutionId") ?? "");
+  const evidenceId = String(fd.get("evidenceId") ?? "");
+
+  const posted = await readPostedFile(fd);
+  if ("error" in posted) return { error: posted.error };
+
+  try {
+    await replaceEvidenceFile(ctx, evidenceId, posted);
+  } catch (e) {
+    return toFormState(e);
+  }
+  revalidate(solutionId, evidenceId);
+  return {};
 }
 
 async function runTransition(
