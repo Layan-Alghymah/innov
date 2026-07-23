@@ -20,7 +20,7 @@ const fieldClass =
 
 const ACTION_LABELS: Record<string, string> = {
   update_fields: "تعديل الحقول",
-  upload_evidence: "رفع الأدلة",
+  "evidence.create": "رفع الأدلة",
   respond_info_request: "الرد على طلب معلومات",
 };
 const FIELD_LABELS: Record<string, string> = {

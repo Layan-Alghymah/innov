@@ -8,7 +8,7 @@ const UPDATE = "solution.update" as const;
 const VIEW = "solution.view" as const;
 
 /** Actions a share may permit (kept to what the platform actually enforces). */
-export const SHAREABLE_ACTIONS = ["update_fields", "upload_evidence", "respond_info_request"] as const;
+export const SHAREABLE_ACTIONS = ["update_fields", "evidence.create", "respond_info_request"] as const;
 
 export interface GrantShareInput {
   userId: string;

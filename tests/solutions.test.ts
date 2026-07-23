@@ -206,7 +206,7 @@ describe("partner sharing", () => {
 
   it("16. partner cannot act outside the share's allowedActions", async () => {
     const id = await newSolution(admin, DEPT_B);
-    await share(id, { allowedActions: ["upload_evidence"] });
+    await share(id, { allowedActions: ["evidence.create"] });
     await expectAuthz(() => updateSharedSolutionFields(partner, id, { notes: "x" }), "ACTION_NOT_ALLOWED");
   });
 });
