@@ -8,9 +8,13 @@ import { isAuthorizationError } from "@/server/authorization";
 import { getIdeaById, computeIdeaActionFlags } from "@/modules/ideas/service";
 import { listIdeaEvaluations, listInfoRequests, computeReviewFlags } from "@/modules/ideas/evaluation-service";
 import { IDEA_STATUS_LABELS } from "@/modules/ideas/schema";
+import { getIdeaDecisionHistory, computeDecisionFlags } from "@/modules/ideas/decision-service";
+import { getLinkedSolution } from "@/modules/ideas/conversion-service";
 import { IdeaActionBar } from "@/modules/ideas/components/idea-actions";
 import { ReviewPanel } from "@/modules/ideas/components/review-panel";
 import { EvaluationTimeline } from "@/modules/ideas/components/evaluation-timeline";
+import { DecisionPanel } from "@/modules/ideas/components/decision-panel";
+import { DecisionHistory } from "@/modules/ideas/components/decision-history";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -29,8 +33,20 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
   }
 
   const flags = computeIdeaActionFlags(ctx, { status: idea.status, submittedById: idea.submittedById, departmentId: idea.departmentId });
-  const [evaluations, infoRequests] = await Promise.all([listIdeaEvaluations(ctx, idea.id), listInfoRequests(ctx, idea.id)]);
+  const [evaluations, infoRequests, decisions, linkedSolution] = await Promise.all([
+    listIdeaEvaluations(ctx, idea.id),
+    listInfoRequests(ctx, idea.id),
+    getIdeaDecisionHistory(ctx, idea.id),
+    getLinkedSolution(ctx, idea.id),
+  ]);
   const reviewFlags = computeReviewFlags(ctx, { status: idea.status, submittedById: idea.submittedById }, can(ctx, "idea.evaluate"));
+  const decisionFlags = computeDecisionFlags(
+    ctx,
+    { status: idea.status, submittedById: idea.submittedById },
+    { decide: can(ctx, "idea.decide"), createSolution: can(ctx, "solution.create") },
+  );
+  // Most recent finalized decision — the target for a governed correction.
+  const finalizedDecisionId = decisions.find((d) => d.finalizedAt)?.id ?? null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -49,6 +65,25 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
       <IdeaActionBar ideaId={idea.id} flags={flags} />
 
       <ReviewPanel ideaId={idea.id} flags={reviewFlags} />
+
+      <DecisionPanel ideaId={idea.id} flags={decisionFlags} finalizedDecisionId={finalizedDecisionId} />
+
+      {linkedSolution && (
+        <Card className="border-primary/30 bg-primary-50/40">
+          <CardHeader>
+            <CardTitle>الحل الابتكاري المرتبط</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-[13.5px] font-semibold text-slate-800 dark:text-slate-100">{linkedSolution.nameAr}</p>
+            <p className="mt-1 text-[12px] text-muted">
+              الحالة: {linkedSolution.status} · مرحلة النضج: {linkedSolution.maturityStage} · التنفيذ: {linkedSolution.implementationStatus}
+            </p>
+            <p className="mt-1 text-[11.5px] text-muted">
+              أُنشئ بالتحويل في {new Date(linkedSolution.createdAt).toLocaleString("ar")}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -88,6 +123,8 @@ export default async function IdeaDetailsPage({ params }: { params: { id: string
       </Card>
 
       <EvaluationTimeline evaluations={evaluations} infoRequests={infoRequests} />
+
+      <DecisionHistory decisions={decisions} />
     </div>
   );
 }
