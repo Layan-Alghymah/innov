@@ -17,6 +17,9 @@ import { EvidenceActionBar } from "@/modules/evidence/components/evidence-action
 import { EvidenceLinksPanel } from "@/modules/evidence/components/evidence-links-panel";
 import { EvidenceTimeline } from "@/modules/evidence/components/evidence-timeline";
 import { EvidenceFilePanel } from "@/modules/evidence/components/evidence-file-panel";
+import { getEvidenceAnalysis, computeAnalysisFlags, confidenceBand } from "@/modules/document-analysis/service";
+import { AnalysisPanel, type AnalysisView } from "@/modules/document-analysis/components/analysis-panel";
+import { prisma } from "@/server/db";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -64,6 +67,53 @@ export default async function EvidenceDetailsPage({ params }: { params: { id: st
 
   const canReplaceFile =
     can(ctx, "evidence.upload") && evidence.reviewStatus !== "APPROVED" && evidence.reviewStatus !== "ARCHIVED";
+
+  // AI analysis is internal-only; a non-internal reader simply sees no panel.
+  let analysisView: AnalysisView | null = null;
+  let analysisAvailable = false;
+  try {
+    const analysis = await getEvidenceAnalysis(ctx, evidence.id);
+    analysisAvailable = true;
+    if (analysis) {
+      const reqIds = Array.from(
+        new Set(analysis.suggestions.map((s) => s.suggestedRequirementId).filter((v): v is string => !!v)),
+      );
+      const reqs = reqIds.length
+        ? await prisma.complianceRequirement.findMany({ where: { id: { in: reqIds } }, select: { id: true, code: true, titleAr: true } })
+        : [];
+      const reqLabel = new Map(reqs.map((r) => [r.id, `${r.code} — ${r.titleAr}`]));
+      analysisView = {
+        status: analysis.status,
+        provider: analysis.provider,
+        model: analysis.model,
+        extractorVersion: analysis.extractorVersion,
+        promptVersion: analysis.promptVersion,
+        completedAt: analysis.completedAt?.toISOString() ?? null,
+        failedAt: analysis.failedAt?.toISOString() ?? null,
+        error: analysis.error,
+        suggestions: analysis.suggestions.map((s) => ({
+          id: s.id,
+          kind: s.kind,
+          fieldKey: s.fieldKey,
+          suggestedValue: s.suggestedValue,
+          suggestedRequirementId: s.suggestedRequirementId,
+          requirementLabel: s.suggestedRequirementId ? reqLabel.get(s.suggestedRequirementId) ?? null : null,
+          confidence: s.confidence,
+          band: confidenceBand(s.confidence),
+          source: { page: s.sourcePage, section: s.sourceSection, cell: s.sourceCell, excerpt: s.sourceExcerpt },
+          reviewOutcome: s.reviewOutcome,
+        })),
+      };
+    }
+  } catch {
+    analysisAvailable = false; // partner/viewer or out-of-scope → no analysis surface
+  }
+  const analysisFlags = computeAnalysisFlags(
+    analysisView?.status,
+    evidence.fileProcessingStatus,
+    evidence.reviewStatus,
+    { canMap: can(ctx, "evidence.upload") },
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -152,6 +202,10 @@ export default async function EvidenceDetailsPage({ params }: { params: { id: st
             : undefined
         }
       />
+
+      {analysisAvailable && (
+        <AnalysisPanel evidenceId={evidence.id} solutionId={params.id} analysis={analysisView} flags={analysisFlags} />
+      )}
 
       <EvidenceLinksPanel
         evidenceId={evidence.id}
