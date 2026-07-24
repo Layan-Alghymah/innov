@@ -393,12 +393,17 @@ async function main() {
     { code: "5.24.2", sectionCode: "5.24", titleAr: "قياس أثر الحلول" },
   ];
   for (const r of requirements) {
+    // 5.24.x requirements inspect a solution and permit governed N/A on 5.24.2
+    // (impact-dependent); the rest keep the defaults. allowNA is DATA, not code.
+    const allowNA = r.code === "5.24.2";
     await prisma.complianceRequirement.upsert({
       where: { code: r.code },
       update: {
         titleAr: r.titleAr,
         sectionCode: r.sectionCode,
         sectionId: sectionIdByCode.get(r.sectionCode),
+        entityType: r.code.startsWith("5.24") ? "INNOVATION_SOLUTION" : null,
+        allowNA,
         isActive: true,
       },
       create: {
@@ -407,40 +412,42 @@ async function main() {
         sectionCode: r.sectionCode,
         sectionId: sectionIdByCode.get(r.sectionCode),
         entityType: r.code.startsWith("5.24") ? "INNOVATION_SOLUTION" : null,
+        allowNA,
         isActive: true,
         version: 1,
       },
     });
   }
 
-  // Example scoring config on 5.24.1 (demonstrates configurable weights/gates —
-  // NOT hard-coded scoring logic; the engine itself is future scope).
+  // Example scoring config (demonstrates configurable weights/gates/optional
+  // criteria — NOT hard-coded scoring logic). The Phase 6 engine reads these.
+  async function fieldRule(requirementId: string, fieldKey: string, data: { labelAr: string; rule?: string; weight?: number; mandatoryGate?: boolean; optional?: boolean }) {
+    await prisma.requirementFieldRule.upsert({
+      where: { requirementId_fieldKey: { requirementId, fieldKey } },
+      update: { labelAr: data.labelAr, rule: data.rule ?? "required", weight: data.weight ?? 1, mandatoryGate: data.mandatoryGate ?? false, optional: data.optional ?? false },
+      create: { requirementId, fieldKey, labelAr: data.labelAr, rule: data.rule ?? "required", weight: data.weight ?? 1, mandatoryGate: data.mandatoryGate ?? false, optional: data.optional ?? false },
+    });
+  }
+  async function evidenceRule(requirementId: string, evidenceTypeKey: string, data: { labelAr: string; minCount?: number; weight?: number; mandatoryGate?: boolean }) {
+    await prisma.requirementEvidenceRule.upsert({
+      where: { requirementId_evidenceTypeKey: { requirementId, evidenceTypeKey } },
+      update: { labelAr: data.labelAr, minCount: data.minCount ?? 1, weight: data.weight ?? 1, mandatoryGate: data.mandatoryGate ?? false },
+      create: { requirementId, evidenceTypeKey, labelAr: data.labelAr, minCount: data.minCount ?? 1, weight: data.weight ?? 1, mandatoryGate: data.mandatoryGate ?? false },
+    });
+  }
+
   const req5241 = await prisma.complianceRequirement.findUnique({ where: { code: "5.24.1" } });
   if (req5241) {
-    await prisma.requirementFieldRule.upsert({
-      where: { requirementId_fieldKey: { requirementId: req5241.id, fieldKey: "strategicObjectiveId" } },
-      update: {},
-      create: {
-        requirementId: req5241.id,
-        fieldKey: "strategicObjectiveId",
-        labelAr: "الهدف الاستراتيجي",
-        rule: "required",
-        weight: 2,
-        mandatoryGate: true,
-      },
-    });
-    await prisma.requirementEvidenceRule.upsert({
-      where: { requirementId_evidenceTypeKey: { requirementId: req5241.id, evidenceTypeKey: "APPROVAL_MEMO" } },
-      update: {},
-      create: {
-        requirementId: req5241.id,
-        evidenceTypeKey: "APPROVAL_MEMO",
-        labelAr: "محضر اعتماد",
-        minCount: 1,
-        weight: 2,
-        mandatoryGate: true,
-      },
-    });
+    await fieldRule(req5241.id, "strategicObjectiveId", { labelAr: "الهدف الاستراتيجي", weight: 2, mandatoryGate: true });
+    await fieldRule(req5241.id, "owningDepartmentId", { labelAr: "الإدارة المالكة", weight: 1, mandatoryGate: true });
+    await fieldRule(req5241.id, "problemStatement", { labelAr: "وصف المشكلة", rule: "minLength:40", weight: 1 });
+    await fieldRule(req5241.id, "notes", { labelAr: "ملاحظات إضافية", rule: "optional", weight: 0, optional: true });
+    await evidenceRule(req5241.id, "APPROVAL_MEMO", { labelAr: "محضر اعتماد", minCount: 1, weight: 2, mandatoryGate: true });
+  }
+  const req5242 = await prisma.complianceRequirement.findUnique({ where: { code: "5.24.2" } });
+  if (req5242) {
+    await fieldRule(req5242.id, "targetBeneficiaries", { labelAr: "الفئة المستفيدة", weight: 1 });
+    await evidenceRule(req5242.id, "IMPACT_REPORT", { labelAr: "تقرير الأثر", minCount: 1, weight: 2 });
   }
 
   console.log(`Seed complete. Admin email: ${adminEmail}`);
