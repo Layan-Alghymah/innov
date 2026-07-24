@@ -24,6 +24,7 @@ All complete. Doc paths under `docs/architecture/` unless noted.
 | 5A — Evidence management | ✅ | `phase-5a-evidence-management.md` | `013c357` |
 | 5A.1 — Evidence binary storage | ✅ | `phase-5a1-evidence-storage.md` | `456a94f` |
 | 5B — AI document analysis | ✅ | `phase-5b-document-analysis.md` | `b0cde54` |
+| 6 — Compliance readiness engine | ✅ | `phase-6-compliance-engine.md` | (this phase) |
 
 (Each phase has feat/test commits preceding its docs commit; see `git log`.)
 
@@ -37,16 +38,17 @@ All complete. Doc paths under `docs/architecture/` unless noted.
 - **Deployment target:** Vercel + managed PostgreSQL + S3/R2 storage (self-hosted MinIO/Docker also supported). Not yet deployed.
 
 ## 4. Quality gates (last verified this session)
-- **Tests:** 239 passing (10 test files) via `vitest` against a disposable PostgreSQL.
+- **Tests:** 272 passing (12 test files) via `vitest` against a disposable PostgreSQL (Phase 6 added 33: 15 pure scoring + 18 integration).
 - **Lint:** ✅ `npm run lint` clean.
 - **Typecheck:** ✅ `npm run typecheck` clean.
-- **Build:** ✅ `npm run build` (20 routes).
+- **Build:** ✅ `npm run build` (22 routes; adds `/solutions/[id]/compliance` + its CSV export route).
 
 ## 5. Database status
 - **Migrations:** 8 tracked, apply cleanly from zero. Schema in sync (no drift).
 - **Latest migration:** `20260723101704_evidence_audit_entity_type` (adds `EVIDENCE` to `LinkedEntityType`).
 - Full list: `20260722005753_init`, `_align_mvp_schema`, `_ideas_status_default_draft`, `_registration_intake_fields`, `_authorization_scope_fields`, `_idea_department_relation`, `20260722223244_idea_info_requests`, `20260723101704_evidence_audit_entity_type`.
 - **Phase 5B added no migration** (DocumentAnalysis/AnalysisSuggestion already existed from 2A).
+- **Phase 6 added no migration** (all compliance models existed from 2A; the engine is pure data + code).
 
 ## 6. Major implemented modules
 - **Authentication** — `src/auth.ts`, `src/auth.config.ts`, `src/modules/auth/`, `src/modules/registration/` (register → PENDING → admin approve/reject; login gated on APPROVED+ACTIVE).
@@ -60,6 +62,7 @@ All complete. Doc paths under `docs/architecture/` unless noted.
 - **Evidence** — `src/modules/evidence/` (registry, upload, lifecycle, linking, timeline, approval-rate).
 - **Storage** — `src/server/storage/` (S3 + memory).
 - **Document Analysis** — `src/modules/document-analysis/` (extractor, provider, pipeline, review UI).
+- **Compliance Engine** — `src/modules/compliance/` (pure scoring/rules core, service, governed N/A, versioned configuration, CSV export, on-screen file UI).
 
 ## 7. Critical invariants — MUST NEVER be broken
 1. **Extraction success never implies approval** — the analysis pipeline never touches `Evidence.reviewStatus`.
@@ -85,14 +88,18 @@ Other standing rules: no hard deletes (archive only); every mutation writes `Aud
 ## 9. Deferred items
 - Rate limiting; LLM analysis provider + provider selection; OCR; async analysis worker; IMPACT_ROW → `ImpactMeasurement` conversion; direct-to-storage upload presigning; deployment (CI/CD, Vercel, managed PG, storage bucket).
 
-## 10. Next phase — Phase 6 (Compliance Readiness Engine)
-- **Not started.** Scope (per `docs/compliance-rules.md` + `docs/mvp-scope.md` §2.7):
-  - Configurable requirement scoring: `ComplianceSection`/`ComplianceRequirement` + `RequirementFieldRule`/`RequirementEvidenceRule` (weights, mandatory gates, optional criteria, `allowNA`, `gateCeiling`) — all **data-driven, no hard-coded 50/50**.
-  - Governed **N/A** via `ComplianceNA` (request → approve, audited; never automatic).
-  - Readiness computed from **real records + APPROVED evidence only**; AI confidence excluded; labelled **"estimated/internal"** (never "DGA").
-  - On-screen compliance file per requirement (readiness, gaps, missing evidence/records, deep links) + print/basic export.
-- **Expected deliverables:** compliance module (service + actions + UI routes), integration tests (weights/gates/N/A/readiness rollup), `docs/architecture/phase-6-compliance-engine.md`, migration only if a genuinely required field is missing.
-- **Invariants to honor:** see the memory note `compliance-optional-criteria-rules` (optional criteria must never compensate for an unmet mandatory gate, never push a score above 100%, and stay separated from required fields/evidence).
+## 10. Phase 6 (Compliance Readiness Engine) — ✅ COMPLETE
+- Configurable requirement scoring (`RequirementFieldRule`/`RequirementEvidenceRule`, weights, mandatory gates, optional criteria, `allowNA`, `gateCeiling`) — **data-driven, no hard-coded 50/50** (blend derived from item weights).
+- Governed **N/A** via `ComplianceNA` (request → approve/reject/revoke, audited; only APPROVED excludes).
+- Readiness from **real records + APPROVED evidence only**; AI confidence excluded; labelled **"estimated/internal"** everywhere.
+- On-screen compliance file per solution (per-requirement readiness, gate reasons, missing fields/evidence, optional criteria, validation errors, N/A controls, deep links) + print view + CSV export (`compliance.export`, audited).
+- **Internal-only detail** (viewers/partners → `NOT_INTERNAL`/404). Configuration requires `compliance.configure` + platform scope; requirement upserts are versioned (`ComplianceRequirementVersion`).
+- Pure scoring/rules core is DB-free and unit-tested; see `docs/architecture/phase-6-compliance-engine.md`.
+
+### Next candidates (post-Phase 6, all MVP-remaining)
+- **Dashboards (§2.8):** wire overall/by-requirement readiness tiles onto `/dashboard` (the compute already exists in `compliance/service.ts`).
+- **Alerts (§2.9):** rule-generated alerts (missing evidence, incomplete solution, agreement expiry, meetings) — currently mock.
+- **Hardening:** rate limiting (`/register` + login), LLM analysis provider selection (KACARE data-residency gate), async analysis worker, deployment (CI/CD, Vercel, managed PG, storage).
 
 ## 11. Read first (next session)
 1. `docs/handoffs/current-project-state.md` (this file)
@@ -140,4 +147,4 @@ Seeded logins (dev): `admin@innovation.local` / `Admin@12345`; `editor|partner|v
 - **Gate:** an external provider must NOT process real institutional documents without **KACARE data-residency approval** (`document-analysis.md` §8). Decision deferred to a dedicated kickoff — see memory note `phase-5b-extraction-provider-decision`.
 
 ## 15. Project completion estimate
-~**80%** of the MVP scope implemented (identity, authorization, full ideas→decisions→conversion governance, solutions registry + lifecycle + sharing, evidence management + secure storage, AI analysis pipeline). Remaining for MVP: **Phase 6 compliance readiness engine**, plus hardening (rate limiting, LLM provider, deployment).
+~**88%** of the MVP scope implemented (identity, authorization, full ideas→decisions→conversion governance, solutions registry + lifecycle + sharing, evidence management + secure storage, AI analysis pipeline, **compliance readiness engine + on-screen file + export**). Remaining for MVP: **dashboards** (readiness tiles) and **alerts** (rules), plus hardening (rate limiting, LLM provider, async worker, deployment).
