@@ -20,6 +20,7 @@ import {
   findActiveShareForEntity,
   requireShareAction,
 } from "@/server/authorization";
+import { enqueueAnalysisRecord, formatFromMime } from "@/modules/document-analysis/service";
 import {
   evidenceMetadataSchema,
   evidenceLinkSchema,
@@ -376,6 +377,10 @@ export async function uploadEvidence(
         tx,
       );
       await recomputeAndStoreReadiness(tx, solutionId);
+      // Enqueue AI document analysis (job only — extraction runs on demand and
+      // never auto-approves). Supported formats only.
+      const format = formatFromMime(validated.mimeType);
+      if (format) await enqueueAnalysisRecord(tx, created.id, format, actor.userId);
       return created;
     });
   } catch (dbError) {
