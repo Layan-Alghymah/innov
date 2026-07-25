@@ -3,8 +3,11 @@
 Concise, factual snapshot for a brand-new session to continue the project. No re-audit; facts gathered from git, migrations, architecture docs, and the latest phase reports.
 
 ## 1. Branch & latest commit
-- **Branch:** `refactor/nextjs-innovation-platform` (main branch is `main`; not pushed)
-- **Latest commit:** `b0cde54` — docs: document Phase 5B document-analysis pipeline
+- **Branch:** `refactor/nextjs-innovation-platform` (main branch is `main`).
+- **Latest Phase 6 commit:** `4988a52` — docs: document Phase 6 compliance engine and update handoff.
+- **Phase 6 commits:** `119d197` (feat) → `5a29b46` (test) → `4988a52` (docs).
+- **Project is being transferred to Codex.** A dedicated takeover package lives at `docs/handoffs/codex-takeover.md` — read it first. An annotated tag `mvp-phase6-complete` marks the takeover point.
+- **No Phase 7 (or any post–Phase 6 implementation) has started.**
 
 ## 2. Completed phases
 All complete. Doc paths under `docs/architecture/` unless noted.
@@ -148,3 +151,19 @@ Seeded logins (dev): `admin@innovation.local` / `Admin@12345`; `editor|partner|v
 
 ## 15. Project completion estimate
 ~**88%** of the MVP scope implemented (identity, authorization, full ideas→decisions→conversion governance, solutions registry + lifecycle + sharing, evidence management + secure storage, AI analysis pipeline, **compliance readiness engine + on-screen file + export**). Remaining for MVP: **dashboards** (readiness tiles) and **alerts** (rules), plus hardening (rate limiting, LLM provider, async worker, deployment).
+
+## 16. Quality gates (verified this session)
+- **Tests:** 272 passing (12 files) via `vitest` against a disposable PostgreSQL.
+- **Lint:** ✅ `npm run lint` clean · **Typecheck:** ✅ `npm run typecheck` clean · **Build:** ✅ `npm run build` (22 routes).
+
+## 17. Engineering audit & stabilization roadmap (pre–Phase 7)
+A full read-only engineering audit was performed before Phase 7. **No Critical (auth-bypass / data-loss / injection) defects were found** — the implemented core (identity → governance → solutions → evidence → analysis → compliance) is near production-grade. The gaps cluster in three areas: auth hardening, MVP breadth, and cross-cutting consistency/debt.
+
+**Top findings (see `docs/handoffs/codex-takeover.md` §D for the full ordered list):**
+- **HIGH** — no rate limiting on login/register; dashboard shows a **fabricated, "(DGA)"-mislabeled** readiness number that contradicts the "estimated/internal, never DGA" invariant; `strategy`/`activities`/`impact`/`partners` are placeholder pages and `alerts` is mock (MVP breadth vs. §5.7/§2.8/§2.9).
+- **MEDIUM** — non-atomic decision reopen/supersede; two divergent error conventions (throw vs. return); duplicated action/scope utilities; immutability-path audits omit `entityType`; no optimistic concurrency; O(N) compliance-overview fan-out; unguarded `listUsersByRegistration`; no AV scan; audit-log growth/index.
+
+**Roadmap (stabilization → breadth → consistency → hardening):** Sprint 1 Integrity & Trust · Sprint 2 MVP Breadth · Sprint 3 Consistency & Performance · Sprint 4 Production Hardening & Deployment.
+
+## 18. Production-readiness
+**Not yet production-ready as a full MVP.** Blockers: rate limiting, the mock/placeholder surfaces (dashboard readiness, alerts, strategy/activities/impact/partners), no AV scan, and no deployment/CI, managed PostgreSQL, object storage, backups, or monitoring. The visible-thread core is close to ready. **No Phase 7 implementation has started.**
