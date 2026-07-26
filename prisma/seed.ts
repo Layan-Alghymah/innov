@@ -103,7 +103,13 @@ async function main() {
   const adminHash = await bcrypt.hash(adminPassword, 10);
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
-    update: {},
+    update: {
+      name: "مدير النظام",
+      passwordHash: adminHash,
+      status: "ACTIVE",
+      registrationStatus: "APPROVED",
+      jobTitle: "مدير منصة الابتكار المؤسسي",
+    },
     create: {
       id: "user-admin",
       email: adminEmail,
@@ -119,7 +125,7 @@ async function main() {
   const adminRoleId = roleIdByKey.get(ROLE_KEYS.SYSTEM_ADMIN)!;
   await prisma.userRole.upsert({
     where: { id: "ur-admin-platform" },
-    update: {},
+    update: { userId: admin.id, roleId: adminRoleId, scopeType: "PLATFORM", scopeId: null },
     create: { id: "ur-admin-platform", userId: admin.id, roleId: adminRoleId, scopeType: "PLATFORM", scopeId: null },
   });
 
@@ -138,7 +144,16 @@ async function main() {
     const hash = await bcrypt.hash(demoPassword, 10);
     const user = await prisma.user.upsert({
       where: { email: opts.email },
-      update: {},
+      update: {
+        name: opts.name,
+        passwordHash: hash,
+        status: "ACTIVE",
+        registrationStatus: "APPROVED",
+        requestedRoleKey: opts.roleKey,
+        approvedById: admin.id,
+        approvedAt: new Date(),
+        jobTitle: opts.jobTitle,
+      },
       create: {
         id: opts.id,
         email: opts.email,
@@ -154,7 +169,12 @@ async function main() {
     });
     await prisma.userRole.upsert({
       where: { id: `ur-${opts.id}` },
-      update: {},
+      update: {
+        userId: user.id,
+        roleId: roleIdByKey.get(opts.roleKey)!,
+        scopeType: opts.scopeType,
+        scopeId: opts.scopeId,
+      },
       create: {
         id: `ur-${opts.id}`,
         userId: user.id,
@@ -166,7 +186,11 @@ async function main() {
     if (opts.membership) {
       await prisma.userMembership.upsert({
         where: { id: `mem-${opts.id}` },
-        update: {},
+        update: {
+          userId: user.id,
+          organizationId: opts.membership.organizationId ?? null,
+          departmentId: opts.membership.departmentId ?? null,
+        },
         create: {
           id: `mem-${opts.id}`,
           userId: user.id,
@@ -294,12 +318,11 @@ async function main() {
   // ---- 8) Solutions registry: one solution (linked from the idea) ---------
   const solution = await prisma.innovationSolution.upsert({
     where: { id: "sol-seed" },
-    update: {},
-    create: {
-      id: "sol-seed",
-      nameAr: "منصة الصيانة الاستباقية",
-      description: "حل تجريبي للبذرة",
-      problemStatement: "اكتشاف الأعطال بعد وقوعها بدل توقّعها مسبقًا",
+    update: {
+      nameAr: "منصة الصيانة الاستباقية للأصول",
+      description:
+        "حل ابتكاري لتحليل بيانات الأصول التشغيلية ودعم فرق الصيانة في اكتشاف مؤشرات الأعطال مبكرًا.",
+      problemStatement: "تؤدي الصيانة التفاعلية بعد وقوع الأعطال إلى توقفات تشغيلية غير مخططة وارتفاع تكلفة المعالجة.",
       source: "ACTIVITY",
       activityId: activity.id,
       ideaId: idea.id,
@@ -311,7 +334,26 @@ async function main() {
       durationMonths: 10,
       cost: "27000.00",
       completionPct: 60,
-      evidenceReadinessPct: 40,
+      status: "ACTIVE",
+    },
+    create: {
+      id: "sol-seed",
+      nameAr: "منصة الصيانة الاستباقية للأصول",
+      description:
+        "حل ابتكاري لتحليل بيانات الأصول التشغيلية ودعم فرق الصيانة في اكتشاف مؤشرات الأعطال مبكرًا.",
+      problemStatement: "تؤدي الصيانة التفاعلية بعد وقوع الأعطال إلى توقفات تشغيلية غير مخططة وارتفاع تكلفة المعالجة.",
+      source: "ACTIVITY",
+      activityId: activity.id,
+      ideaId: idea.id,
+      owningDepartmentId: deptDigital.id,
+      strategicObjectiveId: objective.id,
+      ownerUserId: editorId,
+      maturityStage: "PILOT",
+      implementationStatus: "IN_PROGRESS",
+      durationMonths: 10,
+      cost: "27000.00",
+      completionPct: 60,
+      evidenceReadinessPct: 0,
       status: "ACTIVE",
     },
   });
@@ -448,6 +490,165 @@ async function main() {
   if (req5242) {
     await fieldRule(req5242.id, "targetBeneficiaries", { labelAr: "الفئة المستفيدة", weight: 1 });
     await evidenceRule(req5242.id, "IMPACT_REPORT", { labelAr: "تقرير الأثر", minCount: 1, weight: 2 });
+  }
+
+  // ---- 13) Stakeholder demo evidence + completed analysis -----------------
+  // These records are deterministic and metadata-only. For a live upload and
+  // extraction demo, upload a supported file through the running application
+  // so the configured storage provider owns the binary.
+  if (req5241 && req5242) {
+    const approvedEvidence = await prisma.evidence.upsert({
+      where: { id: "evidence-demo-approved" },
+      update: {
+        title: "محضر اعتماد تجربة الصيانة الاستباقية",
+        classification: "APPROVAL_MEMO",
+        uploadedById: editorId,
+        notes: "سجل عرض معتمد يوضح أن الجاهزية تحتسب الأدلة المعتمدة بشريًا فقط.",
+      },
+      create: {
+        id: "evidence-demo-approved",
+        title: "محضر اعتماد تجربة الصيانة الاستباقية",
+        classification: "APPROVAL_MEMO",
+        fileName: "محضر-اعتماد-تجربة-الصيانة.pdf",
+        mimeType: "application/pdf",
+        fileProcessingStatus: "EXTRACTION_READY",
+        reviewStatus: "APPROVED",
+        verificationStatus: "VERIFIED",
+        uploadedById: editorId,
+        reviewedById: admin.id,
+        reviewedAt: new Date("2026-06-18T09:00:00.000Z"),
+        approvedById: admin.id,
+        approvedAt: new Date("2026-06-18T09:15:00.000Z"),
+        notes: "سجل عرض معتمد يوضح أن الجاهزية تحتسب الأدلة المعتمدة بشريًا فقط.",
+      },
+    });
+
+    const analyzedEvidence = await prisma.evidence.upsert({
+      where: { id: "evidence-demo-analysis" },
+      update: {
+        title: "تقرير قياس أثر التجربة - بانتظار المراجعة",
+        uploadedById: editorId,
+        notes: "نتيجة تحليل مكتملة للعرض؛ الاقتراحات لا تعدّل السجل الرسمي قبل قرار المراجع.",
+      },
+      create: {
+        id: "evidence-demo-analysis",
+        title: "تقرير قياس أثر التجربة - بانتظار المراجعة",
+        fileName: "تقرير-قياس-أثر-التجربة.pdf",
+        mimeType: "application/pdf",
+        fileProcessingStatus: "EXTRACTION_READY",
+        reviewStatus: "DRAFT",
+        verificationStatus: "UNVERIFIED",
+        uploadedById: editorId,
+        notes: "نتيجة تحليل مكتملة للعرض؛ الاقتراحات لا تعدّل السجل الرسمي قبل قرار المراجع.",
+      },
+    });
+
+    for (const evidence of [approvedEvidence, analyzedEvidence]) {
+      await prisma.evidenceLink.upsert({
+        where: {
+          evidenceId_entityType_entityId: {
+            evidenceId: evidence.id,
+            entityType: "INNOVATION_SOLUTION",
+            entityId: solution.id,
+          },
+        },
+        update: {},
+        create: {
+          evidenceId: evidence.id,
+          entityType: "INNOVATION_SOLUTION",
+          entityId: solution.id,
+        },
+      });
+    }
+    await prisma.evidenceLink.upsert({
+      where: {
+        evidenceId_entityType_entityId: {
+          evidenceId: approvedEvidence.id,
+          entityType: "COMPLIANCE_REQUIREMENT",
+          entityId: req5241.id,
+        },
+      },
+      update: { requirementId: req5241.id },
+      create: {
+        evidenceId: approvedEvidence.id,
+        entityType: "COMPLIANCE_REQUIREMENT",
+        entityId: req5241.id,
+        requirementId: req5241.id,
+      },
+    });
+
+    const analysis = await prisma.documentAnalysis.upsert({
+      where: { evidenceId: analyzedEvidence.id },
+      update: {
+        format: "PDF",
+        status: "COMPLETED",
+        provider: "heuristic",
+        model: "rules-1.0.0",
+        extractorVersion: "local-1.0.0",
+        promptVersion: "n/a",
+        startedAt: new Date("2026-07-20T08:30:00.000Z"),
+        completedAt: new Date("2026-07-20T08:30:04.000Z"),
+        failedAt: null,
+        error: null,
+        extractedTextMeta: { pages: 4, textCoverage: 0.96 },
+        sourceRefs: { document: "تقرير قياس أثر التجربة", pages: [1, 2, 3, 4] },
+      },
+      create: {
+        id: "analysis-demo-impact",
+        evidenceId: analyzedEvidence.id,
+        format: "PDF",
+        status: "COMPLETED",
+        provider: "heuristic",
+        model: "rules-1.0.0",
+        extractorVersion: "local-1.0.0",
+        promptVersion: "n/a",
+        startedAt: new Date("2026-07-20T08:30:00.000Z"),
+        completedAt: new Date("2026-07-20T08:30:04.000Z"),
+        extractedTextMeta: { pages: 4, textCoverage: 0.96 },
+        sourceRefs: { document: "تقرير قياس أثر التجربة", pages: [1, 2, 3, 4] },
+      },
+    });
+
+    const demoSuggestions = [
+      {
+        id: "suggestion-demo-classification",
+        kind: "FIELD" as const,
+        fieldKey: "classification",
+        suggestedValue: "IMPACT_REPORT",
+        confidence: 0.94,
+        sourcePage: 1,
+        sourceSection: "ملخص التقرير",
+        sourceExcerpt: "تقرير قياس أثر تجربة الصيانة الاستباقية للأصول التشغيلية",
+      },
+      {
+        id: "suggestion-demo-requirement",
+        kind: "REQUIREMENT_MAP" as const,
+        fieldKey: null,
+        suggestedRequirementId: req5242.id,
+        targetEntityType: "COMPLIANCE_REQUIREMENT" as const,
+        targetEntityId: req5242.id,
+        confidence: 0.91,
+        sourcePage: 2,
+        sourceSection: "مؤشرات الأثر التشغيلي",
+        sourceExcerpt: "انخفاض زمن التوقف غير المخطط خلال فترة التجربة",
+      },
+    ];
+    for (const suggestion of demoSuggestions) {
+      const { id, ...suggestionData } = suggestion;
+      await prisma.analysisSuggestion.upsert({
+        where: { id },
+        update: {
+          analysisId: analysis.id,
+          ...suggestionData,
+        },
+        create: {
+          id,
+          analysisId: analysis.id,
+          ...suggestionData,
+          reviewOutcome: "PENDING",
+        },
+      });
+    }
   }
 
   console.log(`Seed complete. Admin email: ${adminEmail}`);
