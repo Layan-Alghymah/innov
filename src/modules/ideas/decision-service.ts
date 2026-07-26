@@ -7,8 +7,8 @@ import {
   requirePermission,
   requireScope,
   effectiveScopes,
-  supersedeDecision as supersedeDecisionGuard,
-  reopenDecision as reopenDecisionGuard,
+  supersedeDecisionInTransaction,
+  reopenDecisionInTransaction,
 } from "@/server/authorization";
 import { decisionSchema, reasonSchema, supersedeSchema } from "./decision-schema";
 
@@ -156,8 +156,13 @@ export async function reopenIdeaDecision(actor: AccessContext, ideaId: string, d
   if (idea.status === "CONVERTED_TO_SOLUTION") throw new DecisionError("ALREADY_CONVERTED", "لا يمكن إعادة الفتح بعد التحويل إلى حل");
   await loadFinalizedDecision(ideaId, decisionId);
 
-  await reopenDecisionGuard(actor, decisionId, parsed.data.reason); // immutability guard + audit
-  await prisma.idea.update({ where: { id: ideaId }, data: { status: "TECHNICAL_REVIEW" } });
+  await prisma.$transaction(async (tx) => {
+    const reopened = await reopenDecisionInTransaction(actor, decisionId, parsed.data.reason, tx);
+    if (reopened.ideaId !== ideaId) {
+      throw new DecisionError("INVALID_TRANSITION", "القرار غير مرتبط بهذه الفكرة");
+    }
+    await tx.idea.update({ where: { id: ideaId }, data: { status: "TECHNICAL_REVIEW" } });
+  });
 }
 
 /**
@@ -178,14 +183,24 @@ export async function supersedeIdeaDecision(
   if (idea.status === "CONVERTED_TO_SOLUTION") throw new DecisionError("ALREADY_CONVERTED", "لا يمكن التصحيح بعد التحويل إلى حل");
   await loadFinalizedDecision(ideaId, originalDecisionId);
 
-  const created = await supersedeDecisionGuard(actor, originalDecisionId, {
-    decision: parsed.data.decision,
-    notes: parsed.data.reason,
-    finalize: true,
+  return prisma.$transaction(async (tx) => {
+    const created = await supersedeDecisionInTransaction(
+      actor,
+      originalDecisionId,
+      {
+        decision: parsed.data.decision,
+        notes: parsed.data.reason,
+        finalize: true,
+      },
+      tx,
+    );
+    if (created.ideaId !== ideaId) {
+      throw new DecisionError("INVALID_TRANSITION", "القرار غير مرتبط بهذه الفكرة");
+    }
+    const newStatus: IdeaStatus = parsed.data.decision === "APPROVE_FOR_PILOT" ? "APPROVED_FOR_PILOT" : "REJECTED";
+    await tx.idea.update({ where: { id: ideaId }, data: { status: newStatus } });
+    return { id: created.id };
   });
-  const newStatus: IdeaStatus = parsed.data.decision === "APPROVE_FOR_PILOT" ? "APPROVED_FOR_PILOT" : "REJECTED";
-  await prisma.idea.update({ where: { id: ideaId }, data: { status: newStatus } });
-  return created;
 }
 
 /** UI flags only — every action re-enforces server-side. */

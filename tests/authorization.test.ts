@@ -252,8 +252,12 @@ describe("immutability (Layer 5)", () => {
     const created = await supersedeDecision(admin, "test-dec-final", { decision: "REJECT", notes: "correction" });
     const row = await prisma.ideaDecision.findUniqueOrThrow({ where: { id: created.id } });
     expect(row.supersedesId).toBe("test-dec-final");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "DECISION_SUPERSEDED", entityId: created.id } });
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "DECISION_SUPERSEDED", entityType: "IDEA", entityId: "idea-seed" },
+      orderBy: { createdAt: "desc" },
+    });
     expect(audit).not.toBeNull();
+    expect(audit?.metadata).toMatchObject({ decisionId: created.id, supersedesDecisionId: "test-dec-final" });
   });
   it("35. non-privileged actor cannot supersede a decision", async () => {
     await expectCode(() => supersedeDecision(editor, "test-dec-final", { decision: "REJECT" }), "FORBIDDEN");
@@ -264,7 +268,10 @@ describe("immutability (Layer 5)", () => {
     expect(row.verificationStatus).toBe("PENDING");
     expect(row.verifiedAt).toBeNull();
     expect(row.reopenReason).toBe("recount required");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "MEASUREMENT_REOPENED", entityId: "test-meas-verified" } });
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "MEASUREMENT_REOPENED", entityType: "IMPACT_MEASUREMENT", entityId: "test-meas-verified" },
+    });
     expect(audit).not.toBeNull();
+    expect(audit?.metadata).toMatchObject({ measurementId: "test-meas-verified" });
   });
 });

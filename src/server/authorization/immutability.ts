@@ -1,4 +1,4 @@
-import type { DecisionType } from "@prisma/client";
+import type { DecisionType, Prisma } from "@prisma/client";
 
 import { prisma } from "@/server/db";
 import { writeAudit, AUDIT } from "@/server/audit";
@@ -36,58 +36,89 @@ export function assertMutable(
 // ── Sanctioned change paths ────────────────────────────────────────────────
 
 /** Supersede a finalized decision with a new one (original preserved, audited). */
+export async function supersedeDecisionInTransaction(
+  actor: Principal,
+  originalId: string,
+  data: { decision: DecisionType; notes?: string; finalize?: boolean },
+  tx: Prisma.TransactionClient,
+): Promise<{ id: string; ideaId: string }> {
+  requirePermission(actor, "idea.decide");
+  const original = await tx.ideaDecision.findUnique({
+    where: { id: originalId },
+    select: { id: true, ideaId: true },
+  });
+  if (!original) throw new AuthorizationError("NOT_FOUND");
+  const created = await tx.ideaDecision.create({
+    data: {
+      ideaId: original.ideaId,
+      decision: data.decision,
+      notes: data.notes ?? null,
+      supersedesId: original.id,
+      decidedById: actor.userId,
+      finalizedAt: data.finalize ? new Date() : null,
+      finalizedById: data.finalize ? actor.userId : null,
+    },
+    select: { id: true },
+  });
+  await writeAudit(
+    {
+      actorUserId: actor.userId,
+      action: AUDIT.DECISION_SUPERSEDED,
+      entityType: "IDEA",
+      entityId: original.ideaId,
+      summary: "قرار جديد يَنسخ قرارًا سابقًا",
+      metadata: { decisionId: created.id, supersedesDecisionId: original.id },
+    },
+    tx,
+  );
+  return { id: created.id, ideaId: original.ideaId };
+}
+
 export async function supersedeDecision(
   actor: Principal,
   originalId: string,
   data: { decision: DecisionType; notes?: string; finalize?: boolean },
 ): Promise<{ id: string }> {
-  requirePermission(actor, "idea.decide");
   return prisma.$transaction(async (tx) => {
-    const original = await tx.ideaDecision.findUnique({
-      where: { id: originalId },
-      select: { id: true, ideaId: true },
-    });
-    if (!original) throw new AuthorizationError("NOT_FOUND");
-    const created = await tx.ideaDecision.create({
-      data: {
-        ideaId: original.ideaId,
-        decision: data.decision,
-        notes: data.notes ?? null,
-        supersedesId: original.id,
-        decidedById: actor.userId,
-        finalizedAt: data.finalize ? new Date() : null,
-        finalizedById: data.finalize ? actor.userId : null,
-      },
-      select: { id: true },
-    });
-    await writeAudit(
-      {
-        actorUserId: actor.userId,
-        action: AUDIT.DECISION_SUPERSEDED,
-        entityId: created.id,
-        summary: "قرار جديد يَنسخ قرارًا سابقًا",
-        metadata: { supersedes: original.id },
-      },
-      tx,
-    );
-    return created;
+    const created = await supersedeDecisionInTransaction(actor, originalId, data, tx);
+    return { id: created.id };
   });
 }
 
 /** Documented reopening of a finalized decision (clears finalization, audited). */
-export async function reopenDecision(actor: Principal, decisionId: string, reason: string): Promise<void> {
+export async function reopenDecisionInTransaction(
+  actor: Principal,
+  decisionId: string,
+  reason: string,
+  tx: Prisma.TransactionClient,
+): Promise<{ ideaId: string }> {
   requirePermission(actor, "idea.decide");
+  const decision = await tx.ideaDecision.findUnique({
+    where: { id: decisionId },
+    select: { id: true, ideaId: true, finalizedAt: true },
+  });
+  if (!decision) throw new AuthorizationError("NOT_FOUND");
+  await tx.ideaDecision.update({
+    where: { id: decisionId },
+    data: { finalizedAt: null, reopenedAt: new Date(), reopenedById: actor.userId, reopenReason: reason },
+  });
+  await writeAudit(
+    {
+      actorUserId: actor.userId,
+      action: AUDIT.DECISION_REOPENED,
+      entityType: "IDEA",
+      entityId: decision.ideaId,
+      summary: "إعادة فتح قرار",
+      metadata: { decisionId, reason },
+    },
+    tx,
+  );
+  return { ideaId: decision.ideaId };
+}
+
+export async function reopenDecision(actor: Principal, decisionId: string, reason: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    const d = await tx.ideaDecision.findUnique({ where: { id: decisionId }, select: { id: true, finalizedAt: true } });
-    if (!d) throw new AuthorizationError("NOT_FOUND");
-    await tx.ideaDecision.update({
-      where: { id: decisionId },
-      data: { finalizedAt: null, reopenedAt: new Date(), reopenedById: actor.userId, reopenReason: reason },
-    });
-    await writeAudit(
-      { actorUserId: actor.userId, action: AUDIT.DECISION_REOPENED, entityId: decisionId, summary: "إعادة فتح قرار", metadata: { reason } },
-      tx,
-    );
+    await reopenDecisionInTransaction(actor, decisionId, reason, tx);
   });
 }
 
@@ -118,9 +149,10 @@ export async function supersedeMeasurement(
       {
         actorUserId: actor.userId,
         action: AUDIT.MEASUREMENT_SUPERSEDED,
-        entityId: created.id,
+        entityType: "IMPACT_MEASUREMENT",
+        entityId: original.id,
         summary: "قياس جديد يَنسخ قياسًا مُتحقّقًا",
-        metadata: { supersedes: original.id },
+        metadata: { measurementId: created.id, supersedesMeasurementId: original.id },
       },
       tx,
     );
@@ -149,7 +181,14 @@ export async function reopenMeasurement(actor: Principal, measurementId: string,
       },
     });
     await writeAudit(
-      { actorUserId: actor.userId, action: AUDIT.MEASUREMENT_REOPENED, entityId: measurementId, summary: "إعادة فتح قياس مُتحقّق", metadata: { reason } },
+      {
+        actorUserId: actor.userId,
+        action: AUDIT.MEASUREMENT_REOPENED,
+        entityType: "IMPACT_MEASUREMENT",
+        entityId: measurementId,
+        summary: "إعادة فتح قياس مُتحقّق",
+        metadata: { measurementId, reason },
+      },
       tx,
     );
   });

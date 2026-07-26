@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 
 import { prisma } from "@/server/db";
 import { loadAccessContextByUserId, type AccessContext } from "@/server/access-context";
-import { AuthorizationError, assertMutable } from "@/server/authorization";
+import { AuthorizationError, assertMutable, reopenDecisionInTransaction } from "@/server/authorization";
 import { createIdea, submitIdea } from "@/modules/ideas/service";
 import { startInitialReview, advanceToTechnicalReview } from "@/modules/ideas/evaluation-service";
 import {
@@ -192,8 +192,9 @@ describe("governed corrections", () => {
     expect(row.finalizedAt).toBeNull();
     expect(row.reopenReason).toBe("معلومات جديدة تستوجب المراجعة");
     expect((await prisma.idea.findUniqueOrThrow({ where: { id } })).status).toBe("TECHNICAL_REVIEW");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "DECISION_REOPENED", entityId: latest.id } });
+    const audit = await prisma.auditLog.findFirst({ where: { action: "DECISION_REOPENED", entityType: "IDEA", entityId: id } });
     expect(audit).not.toBeNull();
+    expect(audit?.metadata).toMatchObject({ decisionId: latest.id });
   });
 
   it("13. supersede requires a reason and preserves the original", async () => {
@@ -207,8 +208,9 @@ describe("governed corrections", () => {
     expect(newRow.supersedesId).toBe(original.id);
     expect(await prisma.ideaDecision.findUnique({ where: { id: original.id } })).not.toBeNull(); // original preserved
     expect((await prisma.idea.findUniqueOrThrow({ where: { id } })).status).toBe("REJECTED");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "DECISION_SUPERSEDED", entityId: created.id } });
+    const audit = await prisma.auditLog.findFirst({ where: { action: "DECISION_SUPERSEDED", entityType: "IDEA", entityId: id } });
     expect(audit).not.toBeNull();
+    expect(audit?.metadata).toMatchObject({ decisionId: created.id, supersedesDecisionId: original.id });
   });
 
   it("14. decision history preserves every entry", async () => {
@@ -218,6 +220,25 @@ describe("governed corrections", () => {
     await supersedeIdeaDecision(decider, id, first.id, { decision: "REJECT", reason: "تصحيح" });
     const history = await getIdeaDecisionHistory(decider, id);
     expect(history.length).toBe(2);
+  });
+
+  it("14b. reopening rolls back the decision and audit when the surrounding transaction fails", async () => {
+    const id = await technicalIdea(editor);
+    await approveForPilot(decider, id);
+    const [latest] = await getIdeaDecisionHistory(decider, id);
+    const auditCount = await prisma.auditLog.count({ where: { action: "DECISION_REOPENED", entityType: "IDEA", entityId: id } });
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await reopenDecisionInTransaction(decider, latest.id, "rollback test", tx);
+        throw new Error("force rollback");
+      }),
+    ).rejects.toThrow("force rollback");
+
+    const decision = await prisma.ideaDecision.findUniqueOrThrow({ where: { id: latest.id } });
+    expect(decision.finalizedAt).not.toBeNull();
+    expect(decision.reopenedAt).toBeNull();
+    expect(await prisma.auditLog.count({ where: { action: "DECISION_REOPENED", entityType: "IDEA", entityId: id } })).toBe(auditCount);
   });
 });
 
