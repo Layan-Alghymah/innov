@@ -19,11 +19,16 @@ describe("dashboard estimated readiness", () => {
   it("uses the internal estimated label and no fabricated DGA/delta mock", () => {
     const page = readFileSync(path.join(process.cwd(), "src/app/(app)/dashboard/page.tsx"), "utf8");
     const grid = readFileSync(path.join(process.cwd(), "src/modules/dashboard/components/readiness-grid.tsx"), "utf8");
+    const navigation = readFileSync(path.join(process.cwd(), "src/config/navigation.ts"), "utf8");
+    const compliance = readFileSync(path.join(process.cwd(), "src/app/(app)/compliance/page.tsx"), "utf8");
     expect(page).toContain("مؤشر جاهزية تقديري داخلي");
     expect(page).toContain("listComplianceOverview");
     expect(page).not.toContain("(DGA)");
     expect(page).not.toContain("overallReadinessPct");
     expect(page).not.toContain("أعلى من آخر تقييم");
+    expect(page).not.toContain("alertsMock");
     expect(grid).not.toContain("@/modules/dashboard/mock");
+    expect(navigation).not.toContain("(DGA)");
+    expect(compliance).not.toContain("(DGA)");
   });
 });

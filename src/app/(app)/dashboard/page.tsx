@@ -1,11 +1,10 @@
 import Link from "next/link";
+import { ArrowLeft, FileCheck2, FolderCheck } from "lucide-react";
 
 import { StatTile } from "@/components/shared/stat-tile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReadinessGrid } from "@/modules/dashboard/components/readiness-grid";
 import { MaturityBreakdown } from "@/modules/dashboard/components/maturity-breakdown";
-import { AlertItem } from "@/modules/alerts/components/alert-item";
-import { alertsMock, urgentAlertsCount } from "@/modules/alerts/mock";
 import { getAccessContext, can } from "@/server/authz";
 import { getSolutionStats } from "@/modules/solutions/stats-service";
 import type { SolutionStats } from "@/modules/solutions/stats-service";
@@ -15,7 +14,6 @@ import { estimatedReadiness } from "@/modules/dashboard/readiness";
 const EMPTY_STATS: SolutionStats = { total: 0, byMaturity: [], byImplementation: [], completeness: [] };
 
 export default async function DashboardPage() {
-  const reminderCount = alertsMock.length - urgentAlertsCount;
   // Real, scope-filtered solution aggregates (no mock). Nothing is fetched
   // without solution.view.
   const ctx = await getAccessContext();
@@ -27,7 +25,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <StatTile
           label="مؤشر جاهزية تقديري داخلي"
           value={readiness === null ? "—" : `${readiness}%`}
@@ -45,14 +43,6 @@ export default async function DashboardPage() {
           sub="ضمن نطاق صلاحياتك"
           href="/solutions"
         />
-        <StatTile label="الفعاليات الابتكارية هذا العام" value="9" sub="تجاوزت الحد الأدنى (3)" href="/activities" />
-        <StatTile
-          label="تنبيهات تتطلب إجراء"
-          value={String(alertsMock.length)}
-          sub={`${urgentAlertsCount} عاجل / ${reminderCount} تذكير`}
-          href="/alerts"
-          danger
-        />
       </div>
 
       <ReadinessGrid rows={complianceRows} />
@@ -61,15 +51,25 @@ export default async function DashboardPage() {
         <MaturityBreakdown stats={stats} />
         <Card>
           <CardHeader>
-            <CardTitle>أحدث التنبيهات الزمنية</CardTitle>
-            <Link href="/alerts" className="text-[11.5px] font-semibold text-primary hover:underline">
-              عرض الكل ‹
-            </Link>
+            <CardTitle>مسار العرض التشغيلي</CardTitle>
           </CardHeader>
-          <CardContent>
-            {alertsMock.slice(0, 3).map((alert) => (
-              <AlertItem key={alert.id} alert={alert} />
-            ))}
+          <CardContent className="flex flex-col gap-2">
+            <Link
+              href="/compliance"
+              className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-[13px] font-semibold hover:border-primary/40 hover:bg-primary-50/40 dark:border-border-dark"
+            >
+              <FolderCheck className="h-4 w-4 text-primary" />
+              <span className="flex-1">فتح ملف الامتثال والفجوات</span>
+              <ArrowLeft className="h-4 w-4 text-muted" />
+            </Link>
+            <Link
+              href="/solutions"
+              className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-[13px] font-semibold hover:border-primary/40 hover:bg-primary-50/40 dark:border-border-dark"
+            >
+              <FileCheck2 className="h-4 w-4 text-primary" />
+              <span className="flex-1">استعراض الحلول والأدلة</span>
+              <ArrowLeft className="h-4 w-4 text-muted" />
+            </Link>
           </CardContent>
         </Card>
       </div>
