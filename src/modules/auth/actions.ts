@@ -7,18 +7,20 @@ import { signIn, signOut } from "@/auth";
 import { loginSchema } from "./schema";
 import { authenticateCredentials } from "./authenticate";
 import { writeAudit, AUDIT } from "@/server/audit";
+import { requestMetadataFromHeaders } from "@/server/request-context";
 
 export interface LoginState {
   error?: string;
 }
 
-type BlockedReason = "PENDING" | "REJECTED" | "INACTIVE" | "SUSPENDED";
+type BlockedReason = "PENDING" | "REJECTED" | "INACTIVE" | "SUSPENDED" | "RATE_LIMITED";
 
 const BLOCKED_MESSAGE: Record<BlockedReason, string> = {
   PENDING: "حسابك قيد المراجعة من قِبل مدير النظام. سيتم إشعارك عند الاعتماد.",
   REJECTED: "تم رفض طلب التسجيل. للاستفسار يرجى التواصل مع مدير النظام.",
   INACTIVE: "الحساب غير مُفعّل حاليًا. يرجى التواصل مع مدير النظام.",
   SUSPENDED: "تم إيقاف الحساب مؤقتًا. يرجى التواصل مع مدير النظام.",
+  RATE_LIMITED: "تم تجاوز عدد محاولات الدخول المسموح بها. حاول مرة أخرى لاحقًا.",
 };
 
 const BLOCKED_AUDIT = {
@@ -26,6 +28,7 @@ const BLOCKED_AUDIT = {
   REJECTED: AUDIT.LOGIN_BLOCKED_REJECTED,
   INACTIVE: AUDIT.LOGIN_BLOCKED_INACTIVE,
   SUSPENDED: AUDIT.LOGIN_BLOCKED_SUSPENDED,
+  RATE_LIMITED: AUDIT.LOGIN_RATE_LIMITED,
 } as const;
 
 export async function loginAction(_prev: LoginState, formData: FormData): Promise<LoginState> {
@@ -40,17 +43,22 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
   // Determine the specific reason (and audit blocked states) BEFORE issuing a
   // session. This runs server-side and never reveals account state without a
   // correct password.
-  const result = await authenticateCredentials(parsed.data.email, parsed.data.password);
+  const request = requestMetadataFromHeaders(headers());
+  const result = await authenticateCredentials(parsed.data.email, parsed.data.password, request);
   if (!result.ok) {
+    // authenticateCredentials already records the rate-limit audit so direct
+    // Auth.js callback attempts and server-action attempts share one control.
+    if (result.reason === "RATE_LIMITED") {
+      return { error: BLOCKED_MESSAGE.RATE_LIMITED };
+    }
     if (result.reason !== "INVALID_CREDENTIALS") {
-      const h = headers();
       await writeAudit({
         actorUserId: result.userId ?? null,
         action: BLOCKED_AUDIT[result.reason],
         entityId: result.userId ?? null,
         summary: "محاولة دخول محجوبة",
-        ipAddress: h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? h.get("x-real-ip") ?? null,
-        userAgent: h.get("user-agent") ?? null,
+        ipAddress: request.ipAddress,
+        userAgent: request.userAgent,
       });
       return { error: BLOCKED_MESSAGE[result.reason] };
     }

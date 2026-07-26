@@ -1,6 +1,9 @@
 import bcrypt from "bcryptjs";
 
 import { prisma } from "@/server/db";
+import { writeAudit, AUDIT } from "@/server/audit";
+import { checkRateLimit, clearRateLimit, consumeRateLimit } from "@/server/rate-limit";
+import type { RequestMetadata } from "@/server/request-context";
 
 export type AuthPrincipal = {
   id: string;
@@ -13,7 +16,31 @@ export type AuthPrincipal = {
 
 export type AuthResult =
   | { ok: true; user: AuthPrincipal }
-  | { ok: false; reason: "INVALID_CREDENTIALS" | "PENDING" | "REJECTED" | "INACTIVE" | "SUSPENDED"; userId?: string };
+  | {
+      ok: false;
+      reason: "INVALID_CREDENTIALS" | "PENDING" | "REJECTED" | "INACTIVE" | "SUSPENDED" | "RATE_LIMITED";
+      userId?: string;
+      retryAfterSeconds?: number;
+    };
+
+async function recordLoginFailure(
+  subject: { email: string; ipAddress: string | null },
+  request: RequestMetadata,
+  userId?: string,
+): Promise<AuthResult | null> {
+  const limited = await consumeRateLimit("LOGIN", subject);
+  if (limited.allowed) return null;
+  await writeAudit({
+    actorUserId: userId ?? null,
+    action: AUDIT.LOGIN_RATE_LIMITED,
+    entityId: userId ?? null,
+    summary: "تجاوز حد محاولات تسجيل الدخول",
+    metadata: { retryAfterSeconds: limited.retryAfterSeconds },
+    ipAddress: request.ipAddress,
+    userAgent: request.userAgent,
+  });
+  return { ok: false, reason: "RATE_LIMITED", userId, retryAfterSeconds: limited.retryAfterSeconds };
+}
 
 /**
  * Server-side credential check with account-state gating (Task C).
@@ -22,8 +49,25 @@ export type AuthResult =
  * never weakened or skipped. Reasons are distinguished only AFTER a correct
  * password, so account state is not disclosed to arbitrary users.
  */
-export async function authenticateCredentials(emailRaw: string, password: string): Promise<AuthResult> {
+export async function authenticateCredentials(
+  emailRaw: string,
+  password: string,
+  request: RequestMetadata = { ipAddress: null, userAgent: null },
+): Promise<AuthResult> {
   const email = emailRaw.trim().toLowerCase();
+  const subject = { email, ipAddress: request.ipAddress };
+  const preflight = await checkRateLimit("LOGIN", subject);
+  if (!preflight.allowed) {
+    await writeAudit({
+      action: AUDIT.LOGIN_RATE_LIMITED,
+      summary: "محاولة تسجيل دخول أثناء فترة الحظر",
+      metadata: { retryAfterSeconds: preflight.retryAfterSeconds },
+      ipAddress: request.ipAddress,
+      userAgent: request.userAgent,
+    });
+    return { ok: false, reason: "RATE_LIMITED", retryAfterSeconds: preflight.retryAfterSeconds };
+  }
+
   const user = await prisma.user.findUnique({
     where: { email },
     select: {
@@ -37,16 +81,35 @@ export async function authenticateCredentials(emailRaw: string, password: string
     },
   });
 
-  if (!user?.passwordHash) return { ok: false, reason: "INVALID_CREDENTIALS" };
+  if (!user?.passwordHash) {
+    return (await recordLoginFailure(subject, request)) ?? { ok: false, reason: "INVALID_CREDENTIALS" };
+  }
   const valid = await bcrypt.compare(password, user.passwordHash);
-  if (!valid) return { ok: false, reason: "INVALID_CREDENTIALS" };
+  if (!valid) {
+    return (await recordLoginFailure(subject, request, user.id)) ?? { ok: false, reason: "INVALID_CREDENTIALS" };
+  }
 
-  // Password correct — now gate on registration + operational status.
-  if (user.registrationStatus === "PENDING") return { ok: false, reason: "PENDING", userId: user.id };
-  if (user.registrationStatus === "REJECTED") return { ok: false, reason: "REJECTED", userId: user.id };
-  if (user.status === "INACTIVE") return { ok: false, reason: "INACTIVE", userId: user.id };
-  if (user.status === "SUSPENDED") return { ok: false, reason: "SUSPENDED", userId: user.id };
+  const blockedReason =
+    user.registrationStatus === "PENDING"
+      ? "PENDING"
+      : user.registrationStatus === "REJECTED"
+        ? "REJECTED"
+        : user.status === "INACTIVE"
+          ? "INACTIVE"
+          : user.status === "SUSPENDED"
+            ? "SUSPENDED"
+            : null;
+  if (blockedReason) {
+    return (
+      (await recordLoginFailure(subject, request, user.id)) ?? {
+        ok: false,
+        reason: blockedReason,
+        userId: user.id,
+      }
+    );
+  }
 
+  await clearRateLimit("LOGIN", subject);
   const roleKeys = Array.from(new Set(user.roleAssignments.map((r) => r.role.key)));
   return {
     ok: true,

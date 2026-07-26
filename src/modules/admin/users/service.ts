@@ -1,6 +1,7 @@
 import { prisma } from "@/server/db";
 import { writeAudit, AUDIT } from "@/server/audit";
 import type { PermissionKey } from "@/modules/auth/permissions";
+import { requirePermission } from "@/server/authorization";
 import {
   approveSchema,
   rejectSchema,
@@ -205,7 +206,8 @@ export async function setAccountState(actor: Actor, raw: AccountStateInput | unk
 }
 
 /** Read helper for the admin page. */
-export async function listUsersByRegistration(status?: "PENDING" | "APPROVED" | "REJECTED") {
+export async function listUsersByRegistration(actor: Actor, status?: "PENDING" | "APPROVED" | "REJECTED") {
+  requirePermission(actor, MANAGE);
   return prisma.user.findMany({
     where: status ? { registrationStatus: status } : undefined,
     orderBy: { createdAt: "desc" },

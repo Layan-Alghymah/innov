@@ -1212,3 +1212,21 @@ model AuditLog {
   @@index([actorUserId])
   @@map("audit_logs")
 }
+
+/// Durable fixed-window counters shared by every application instance.
+/// `subjectHash` is an HMAC of normalized email + request IP; raw email is
+/// never persisted in the limiter table.
+model RateLimitBucket {
+  id          String   @id
+  action      String
+  subjectHash String
+  windowStart DateTime
+  expiresAt   DateTime
+  count       Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([action, subjectHash])
+  @@index([expiresAt])
+  @@map("rate_limit_buckets")
+}

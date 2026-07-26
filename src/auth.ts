@@ -6,6 +6,7 @@ import authConfig from "@/auth.config";
 import { prisma } from "@/server/db";
 import { loginSchema } from "@/modules/auth/schema";
 import { authenticateCredentials } from "@/modules/auth/authenticate";
+import { requestMetadataFromHeaders } from "@/server/request-context";
 
 /**
  * Full (Node-runtime) Auth.js instance.
@@ -28,11 +29,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: "البريد الإلكتروني", type: "email" },
         password: { label: "كلمة المرور", type: "password" },
       },
-      authorize: async (credentials) => {
+      authorize: async (credentials, request) => {
         const parsed = loginSchema.safeParse(credentials);
         if (!parsed.success) return null;
 
-        const result = await authenticateCredentials(parsed.data.email, parsed.data.password);
+        const result = await authenticateCredentials(
+          parsed.data.email,
+          parsed.data.password,
+          requestMetadataFromHeaders(request.headers),
+        );
         if (!result.ok) return null;
 
         const { id, name, email, registrationStatus, status, roleKeys } = result.user;

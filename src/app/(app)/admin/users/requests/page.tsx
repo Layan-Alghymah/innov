@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 
 import { prisma } from "@/server/db";
 import { getAccessContext } from "@/server/authz";
@@ -18,10 +19,12 @@ function toRow(u: {
 }
 
 export default async function RegistrationRequestsPage() {
-  const [ctx, pendingRaw, allRaw, orgsRaw, deptsRaw] = await Promise.all([
-    getAccessContext(),
-    listUsersByRegistration("PENDING"),
-    listUsersByRegistration(),
+  const ctx = await getAccessContext();
+  if (!ctx) redirect("/login");
+
+  const [pendingRaw, allRaw, orgsRaw, deptsRaw] = await Promise.all([
+    listUsersByRegistration(ctx, "PENDING"),
+    listUsersByRegistration(ctx),
     prisma.organization.findMany({ select: { id: true, nameAr: true }, orderBy: { nameAr: "asc" } }),
     prisma.department.findMany({ select: { id: true, nameAr: true }, orderBy: { nameAr: "asc" } }),
   ]);

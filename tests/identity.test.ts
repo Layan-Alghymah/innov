@@ -7,9 +7,11 @@ import {
   approveRegistration,
   rejectRegistration,
   setAccountState,
+  listUsersByRegistration,
   type Actor,
 } from "@/modules/admin/users/service";
 import { loadAccessContextByUserId } from "@/server/access-context";
+import { AuthorizationError } from "@/server/authorization";
 
 /**
  * Integration tests for the Phase 2B identity lifecycle, run against a
@@ -145,6 +147,11 @@ describe("login enforcement", () => {
 });
 
 describe("admin approval / rejection", () => {
+  it("8c. listUsersByRegistration enforces user.manage inside the service", async () => {
+    await expect(listUsersByRegistration(adminActor, "PENDING")).resolves.toBeInstanceOf(Array);
+    await expect(listUsersByRegistration(editorActor, "PENDING")).rejects.toBeInstanceOf(AuthorizationError);
+  });
+
   it("9. non-admin cannot approve a registration", async () => {
     const { email } = await register();
     const u = await prisma.user.findUniqueOrThrow({ where: { email } });
