@@ -4,12 +4,13 @@ import { StatTile } from "@/components/shared/stat-tile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReadinessGrid } from "@/modules/dashboard/components/readiness-grid";
 import { MaturityBreakdown } from "@/modules/dashboard/components/maturity-breakdown";
-import { overallReadinessPct } from "@/modules/dashboard/mock";
 import { AlertItem } from "@/modules/alerts/components/alert-item";
 import { alertsMock, urgentAlertsCount } from "@/modules/alerts/mock";
 import { getAccessContext, can } from "@/server/authz";
 import { getSolutionStats } from "@/modules/solutions/stats-service";
 import type { SolutionStats } from "@/modules/solutions/stats-service";
+import { listComplianceOverview } from "@/modules/compliance/service";
+import { estimatedReadiness } from "@/modules/dashboard/readiness";
 
 const EMPTY_STATS: SolutionStats = { total: 0, byMaturity: [], byImplementation: [], completeness: [] };
 
@@ -18,15 +19,23 @@ export default async function DashboardPage() {
   // Real, scope-filtered solution aggregates (no mock). Nothing is fetched
   // without solution.view.
   const ctx = await getAccessContext();
-  const stats = ctx && can(ctx, "solution.view") ? await getSolutionStats(ctx) : EMPTY_STATS;
+  const [stats, complianceRows] = await Promise.all([
+    ctx && can(ctx, "solution.view") ? getSolutionStats(ctx) : EMPTY_STATS,
+    ctx && can(ctx, "compliance.view") ? listComplianceOverview(ctx) : [],
+  ]);
+  const readiness = estimatedReadiness(complianceRows);
 
   return (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
-          label="الجاهزية الإجمالية للامتثال (DGA)"
-          value={`${overallReadinessPct}%`}
-          sub="▲ أعلى من آخر تقييم بـ 6 نقاط"
+          label="مؤشر جاهزية تقديري داخلي"
+          value={readiness === null ? "—" : `${readiness}%`}
+          sub={
+            complianceRows.length
+              ? `متوسط ${complianceRows.length} من الحلول ضمن نطاق صلاحياتك`
+              : "لا توجد حلول مهيأة للحساب ضمن نطاق صلاحياتك"
+          }
           href="/compliance"
           hero
         />
@@ -46,7 +55,7 @@ export default async function DashboardPage() {
         />
       </div>
 
-      <ReadinessGrid />
+      <ReadinessGrid rows={complianceRows} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <MaturityBreakdown stats={stats} />
