@@ -360,6 +360,69 @@ async function main() {
     },
   });
 
+  const supportingSolutions = [
+    {
+      id: "sol-demo-energy",
+      nameAr: "نظام متابعة كفاءة استهلاك الطاقة",
+      description:
+        "لوحة تشغيلية تجمع مؤشرات استهلاك الطاقة من المرافق وتدعم مقارنة الأداء واكتشاف فرص التحسين.",
+      problemStatement:
+        "تتوزع بيانات استهلاك الطاقة بين مصادر متعددة، مما يؤخر اكتشاف الانحرافات ويحد من القدرة على قياس أثر مبادرات الكفاءة.",
+      maturityStage: "POC" as const,
+      implementationStatus: "IN_PROGRESS" as const,
+      targetBeneficiaries: "فرق كفاءة الطاقة والتشغيل والاستدامة",
+      completionPct: 45,
+    },
+    {
+      id: "sol-demo-ideas",
+      nameAr: "بوابة إدارة المقترحات الابتكارية",
+      description:
+        "قناة مؤسسية موحدة لاستقبال المقترحات وفرزها ومتابعة قرارات التقييم وربط المقبول منها بسجل الحلول.",
+      problemStatement:
+        "تصل المقترحات الابتكارية عبر قنوات متفرقة دون سجل موحد يوضح الملكية وحالة التقييم والقرارات المتخذة.",
+      maturityStage: "CONCEPT" as const,
+      implementationStatus: "PLANNING" as const,
+      targetBeneficiaries: null,
+      completionPct: 25,
+    },
+  ];
+
+  for (const item of supportingSolutions) {
+    await prisma.innovationSolution.upsert({
+      where: { id: item.id },
+      update: {
+        nameAr: item.nameAr,
+        description: item.description,
+        problemStatement: item.problemStatement,
+        source: "INTERNAL_PROPOSAL",
+        owningDepartmentId: deptDigital.id,
+        strategicObjectiveId: objective.id,
+        ownerUserId: editorId,
+        maturityStage: item.maturityStage,
+        implementationStatus: item.implementationStatus,
+        targetBeneficiaries: item.targetBeneficiaries,
+        completionPct: item.completionPct,
+        status: "ACTIVE",
+      },
+      create: {
+        id: item.id,
+        nameAr: item.nameAr,
+        description: item.description,
+        problemStatement: item.problemStatement,
+        source: "INTERNAL_PROPOSAL",
+        owningDepartmentId: deptDigital.id,
+        strategicObjectiveId: objective.id,
+        ownerUserId: editorId,
+        maturityStage: item.maturityStage,
+        implementationStatus: item.implementationStatus,
+        targetBeneficiaries: item.targetBeneficiaries,
+        completionPct: item.completionPct,
+        evidenceReadinessPct: 0,
+        status: "ACTIVE",
+      },
+    });
+  }
+
   // ---- 9) Impact: one indicator -------------------------------------------
   await prisma.impactIndicator.upsert({
     where: { id: "imp-seed" },
