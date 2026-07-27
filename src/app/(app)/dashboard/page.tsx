@@ -45,7 +45,14 @@ export default async function DashboardPage() {
         />
       </div>
 
-      <ReadinessGrid rows={complianceRows} />
+      <div className="flex flex-col gap-3">
+        <ReadinessGrid rows={complianceRows.slice(0, 5)} />
+        {complianceRows.length > 5 && (
+          <Link href="/solutions" className="self-end text-[12px] font-semibold text-primary hover:underline">
+            عرض جميع الحلول في السجل
+          </Link>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <MaturityBreakdown stats={stats} />
