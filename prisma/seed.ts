@@ -233,42 +233,6 @@ async function main() {
     membership: { organizationId: owner.id },
   });
 
-  // Demo registration requests (no role assignment) to exercise the review UI.
-  if (demoPassword) {
-    const demoHash = await bcrypt.hash(demoPassword, 10);
-    await prisma.user.upsert({
-      where: { email: "pending@innovation.local" },
-      update: {},
-      create: {
-        id: "user-pending",
-        email: "pending@innovation.local",
-        name: "طلب تسجيل قيد الانتظار",
-        passwordHash: demoHash,
-        status: "INACTIVE",
-        registrationStatus: "PENDING",
-        requestedRoleKey: ROLE_KEYS.INTERNAL_EDITOR,
-        requestedDepartmentId: deptDigital.id,
-        registrationNote: "طلب تجريبي لاختبار مسار الاعتماد",
-      },
-    });
-    await prisma.user.upsert({
-      where: { email: "rejected@innovation.local" },
-      update: {},
-      create: {
-        id: "user-rejected",
-        email: "rejected@innovation.local",
-        name: "طلب تسجيل مرفوض",
-        passwordHash: demoHash,
-        status: "INACTIVE",
-        registrationStatus: "REJECTED",
-        requestedRoleKey: ROLE_KEYS.VIEWER,
-        approvedById: admin.id,
-        approvedAt: new Date(),
-        rejectionReason: "بيانات غير مكتملة (سجل تجريبي)",
-      },
-    });
-  }
-
   const editorId = editor?.id ?? admin.id; // fall back to admin when demo users are skipped
 
   // ---- 5) Strategy: one objective -----------------------------------------
