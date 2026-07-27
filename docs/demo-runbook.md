@@ -32,7 +32,11 @@ innov-postgres | postgres:16-alpine | 0.0.0.0:5433->5432/tcp
 
 ## 2. إعداد ملف بيئة العرض
 
-أنشئ ملفًا محليًا غير متتبع:
+ملف `.env.demo.example` قالب متتبع في Git بلا أسرار. ينشئ أمر العرض
+`.env.demo` تلقائيًا من القالب عند غيابه، ويولّد سر مصادقة محليًا. يبقى
+`.env.demo` غير متتبع.
+
+يمكن نسخه يدويًا فقط عند الحاجة إلى تعديل بيانات اتصال Docker قبل التشغيل:
 
 ```powershell
 Copy-Item .env.demo.example .env.demo
@@ -51,7 +55,7 @@ STORAGE_DRIVER="memory"
 
 ## 3. إنشاء وتجهيز `innovation_demo`
 
-السكربت التالي:
+الأمر التالي:
 
 1. يرفض العمل إذا كان الرابط يشير إلى `innovation_platform`.
 2. يقبل فقط قاعدة باسم `innovation_demo`.
@@ -61,11 +65,7 @@ STORAGE_DRIVER="memory"
 6. لا يعدّل `.env` ولا قاعدة التطوير.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\setup-demo-db.ps1 `
-  -EnvironmentFile .env.demo `
-  -ContainerName innov-postgres `
-  -PostgresUser postgres
+npm run demo:setup
 ```
 
 للتأكد يدويًا من وجود القاعدتين:
@@ -76,18 +76,22 @@ docker exec innov-postgres psql -U postgres -d postgres -c "\l"
 
 ## 4. تشغيل التطبيق ببيئة العرض
 
-حمّل متغيرات `.env.demo` في نافذة PowerShell الحالية:
+من checkout نظيف يكفي:
 
 ```powershell
-Get-Content .env.demo |
-  Where-Object { $_ -match '^\s*[^#][^=]*=' } |
-  ForEach-Object {
-    $name, $value = $_ -split '=', 2
-    Set-Item -Path "Env:$($name.Trim())" -Value $value.Trim().Trim('"').Trim("'")
-  }
-
 npm install
-npm run dev
+npm run demo:dev
+```
+
+ينشئ `demo:dev` ملف `.env.demo` عند غيابه، ويجهز القاعدة، ويحمل متغيراتها
+صراحة في عملية التشغيل، ويتحقق أن اسم القاعدة `innovation_demo` قبل تشغيل
+Next.js.
+
+قد يطبع Next.js السطر `Environments: .env` لأنه اكتشف الملف العام، لكن متغيرات
+العملية المحملة من `.env.demo` لها الأولوية. يطبع مشغل العرض قبل Next.js:
+
+```text
+Verified demo target: database 'innovation_demo' from '.env.demo'.
 ```
 
 الرابط:
@@ -96,11 +100,10 @@ npm run dev
 http://localhost:3000
 ```
 
-للتشغيل بوضع الإنتاج المحلي:
+للتشغيل بوضع الإنتاج المحلي بأمر واحد (يتضمن البناء):
 
 ```powershell
-npm run build
-npm run start
+npm run demo:start
 ```
 
 ## 5. حسابات العرض

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$EnvironmentFile = ".env.demo",
-  [string]$ContainerName,
+  [string]$ContainerName = "innov-postgres",
   [string]$PostgresUser = "postgres",
   [switch]$SkipCreate
 )
@@ -10,11 +10,28 @@ $ErrorActionPreference = "Stop"
 $DemoDatabaseName = "innovation_demo"
 $DevelopmentDatabaseName = "innovation_platform"
 
+function Initialize-DemoEnvironmentFile {
+  param([string]$Path)
+
+  if (Test-Path -LiteralPath $Path) { return }
+
+  $template = Join-Path $PSScriptRoot "..\.env.demo.example"
+  if (-not (Test-Path -LiteralPath $template)) {
+    throw "Demo environment template '$template' was not found."
+  }
+
+  $content = Get-Content -Raw -LiteralPath $template -Encoding UTF8
+  $generatedSecret = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+  $content = $content.Replace("replace-with-a-long-random-demo-secret", $generatedSecret)
+  Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+  Write-Host "Created local demo environment '$Path' from .env.demo.example."
+}
+
 function Read-EnvironmentFile {
   param([string]$Path)
 
   if (-not (Test-Path -LiteralPath $Path)) {
-    throw "Environment file '$Path' was not found. Copy .env.demo.example to .env.demo first."
+    throw "Environment file '$Path' was not found."
   }
 
   $values = @{}
@@ -28,6 +45,7 @@ function Read-EnvironmentFile {
   return $values
 }
 
+Initialize-DemoEnvironmentFile -Path $EnvironmentFile
 $environment = Read-EnvironmentFile -Path $EnvironmentFile
 $databaseUrl = $environment["DATABASE_URL"]
 if (-not $databaseUrl) {

@@ -15,7 +15,10 @@
     "db:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "demo:setup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-demo-db.ps1",
+    "demo:dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-demo.ps1 -Mode dev",
+    "demo:start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-demo.ps1 -Mode start"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
